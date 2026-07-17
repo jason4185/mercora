@@ -1,0 +1,22 @@
+{
+  "name": "mercora-settlement-worker",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "genlayer-js": "1.1.8",
+    "viem": "^2.33.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260715.1",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.4",
+    "wrangler": "4.111.0"
+  }
+}

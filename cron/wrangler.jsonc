@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mercora-settlement-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "GENLAYER_NETWORK": "testnet-bradbury",
+    "GENLAYER_RPC": "https://rpc-bradbury.genlayer.com",
+    "PAGE_SIZE": "25",
+    "GAS_MARGIN_PERCENT": "30"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "SETTLEMENT_COORDINATOR", "class_name": "SettlementCoordinator" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SettlementCoordinator"] }]
+}

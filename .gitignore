@@ -1,0 +1,17 @@
+**/.venv/
+**/.venv*/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+artifacts/
+**/node_modules/
+**/dist/
+**/.dev.vars
+**/.env.local
+**/.wrangler/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+.DS_Store
+*.log

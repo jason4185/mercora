@@ -1,0 +1,32 @@
+{
+  "contract": "MercoraMarket",
+  "constructor": [],
+  "methods": {
+    "create_market": {"kind":"write","payable":false,"args":[["asset","string"],["candle_start","u256"]],"returns":"u256"},
+    "place_bet": {"kind":"write","payable":true,"args":[["market_id","u256"],["position","string"]],"returns":"null"},
+    "settle_market": {"kind":"write","payable":false,"args":[["market_id","u256"]],"returns":"null"},
+    "claim_winnings": {"kind":"write","payable":false,"args":[["market_id","u256"]],"returns":"u256"},
+    "claim_refund": {"kind":"write","payable":false,"args":[["market_id","u256"]],"returns":"u256"},
+    "set_market_operator": {"kind":"write","payable":false,"args":[["operator","string"]],"returns":"null"},
+    "get_market": {"kind":"view","args":[["market_id","u256"]],"returns":"string(JSON)"},
+    "market_exists": {"kind":"view","args":[["market_id","u256"]],"returns":"bool"},
+    "get_market_count": {"kind":"view","args":[],"returns":"u256"},
+    "get_market_display_status": {"kind":"view","args":[["market_id","u256"]],"returns":"string"},
+    "is_market_ready_for_settlement": {"kind":"view","args":[["market_id","u256"]],"returns":"bool"},
+    "get_due_market_ids": {"kind":"view","args":[["cursor","u256"],["limit","u256"]],"returns":"string(JSON)"},
+    "get_active_market_ids": {"kind":"view","args":[["cursor","u256"],["limit","u256"]],"returns":"string(JSON)"},
+    "get_market_ids": {"kind":"view","args":[["cursor","u256"],["limit","u256"]],"returns":"string(JSON)"},
+    "get_completed_market_ids": {"kind":"view","args":[["cursor","u256"],["limit","u256"]],"returns":"string(JSON)"},
+    "get_market_probabilities_bps": {"kind":"view","args":[["market_id","u256"]],"returns":"string(JSON)"},
+    "get_user_position": {"kind":"view","args":[["market_id","u256"],["wallet","string"]],"returns":"string(JSON)"},
+    "get_user_market_ids": {"kind":"view","args":[["wallet","string"]],"returns":"string(JSON)"},
+    "get_user_market_ids_page": {"kind":"view","args":[["wallet","string"],["cursor","u256"],["limit","u256"]],"returns":"string(JSON)"},
+    "get_user_market_status": {"kind":"view","args":[["market_id","u256"],["wallet","string"]],"returns":"string(JSON)"},
+    "get_claimable_amount": {"kind":"view","args":[["market_id","u256"],["wallet","string"]],"returns":"u256"},
+    "get_refundable_amount": {"kind":"view","args":[["market_id","u256"],["wallet","string"]],"returns":"u256"},
+    "get_market_id_by_key": {"kind":"view","args":[["asset","string"],["candle_start","u256"]],"returns":"string(JSON)"},
+    "validate_market_creation": {"kind":"view","args":[["asset","string"],["candle_start","u256"]],"returns":"string(JSON)"},
+    "get_market_configuration": {"kind":"view","args":[],"returns":"string(JSON)"},
+    "get_protocol_stats": {"kind":"view","args":[],"returns":"string(JSON)"}
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "network": "testnet-bradbury",
+  "chain_id": 4221,
+  "rpc_url": "https://rpc-bradbury.genlayer.com",
+  "contracts": {
+    "focused_crypto_v2_current": ""
+  },
+  "deployments": {
+    "focused_crypto_v2": {
+      "status": "NOT_DEPLOYED",
+      "note": "Deployment is intentionally pending live GenLayer validation."
+    }
+  },
+  "frontend": {
+    "status": "repository_harness",
+    "temporary_repository_harness_is_production": false
+  }
+}
