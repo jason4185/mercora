@@ -8,6 +8,9 @@ artifacts/
 **/node_modules/
 **/dist/
 **/.dev.vars
+**/.env
+**/.env.*
+!**/.env.example
 **/.env.local
 **/.wrangler/
 *.tsbuildinfo
@@ -15,3 +18,10 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 .DS_Store
 *.log
+.idea/
+.vscode/
+*.key
+*.pem
+*keystore*.json
+*account*export*.json
+*operator*export*.json

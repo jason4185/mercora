@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/mercora/app-shell";
 import { cn } from "@/lib/utils";
 import { Menu } from "lucide-react";
+import { useMarketConfiguration } from "@/hooks/contract/use-mercora";
+import { weiToGen } from "@/lib/contract-parsers";
+import { ContractRefreshWarning } from "@/components/mercora/contract-refresh-warning";
 
 export const Route = createFileRoute("/docs")({
   component: DocsPage,
@@ -12,29 +15,29 @@ export const Route = createFileRoute("/docs")({
       {
         name: "description",
         content:
-          "Mercora protocol documentation: lifecycle, settlement, contract reads, writes, and trust model.",
+          "Learn how Mercora markets work, how prices are checked, and how payouts and refunds become available.",
       },
     ],
   }),
 });
 
 const SECTIONS: { id: string; label: string }[] = [
-  { id: "overview", label: "Protocol overview" },
-  { id: "assets", label: "Supported assets & format" },
-  { id: "lifecycle", label: "Lifecycle & statuses" },
-  { id: "betting", label: "Betting rules & limits" },
-  { id: "payout", label: "Payout formula & example" },
-  { id: "settlement", label: "Five-source settlement" },
-  { id: "consensus", label: "3-of-5 consensus" },
-  { id: "inconclusive", label: "Inconclusive & cancelled" },
-  { id: "claims", label: "Claims & refunds" },
-  { id: "permissions", label: "Owner / operator permissions" },
-  { id: "trust", label: "Frontend vs contract trust model" },
-  { id: "reads", label: "Contract reads" },
-  { id: "writes", label: "Contract writes" },
-  { id: "validators", label: "Leader / validator flow" },
-  { id: "limitations", label: "Limitations & risks" },
-  { id: "network", label: "Contract, explorer, network" },
+  { id: "overview", label: "How Mercora Works" },
+  { id: "assets", label: "Supported Assets" },
+  { id: "lifecycle", label: "Market Stages" },
+  { id: "betting", label: "Betting Limits" },
+  { id: "payout", label: "How Payouts Work" },
+  { id: "settlement", label: "How Prices Are Checked" },
+  { id: "consensus", label: "How a Result Is Confirmed" },
+  { id: "inconclusive", label: "Markets Without a Clear Result" },
+  { id: "claims", label: "Claims and Refunds" },
+  { id: "permissions", label: "Who Can Process Markets" },
+  { id: "trust", label: "How Results Are Protected" },
+  { id: "reads", label: "Available Information" },
+  { id: "writes", label: "Available Actions" },
+  { id: "validators", label: "How GenLayer Checks Results" },
+  { id: "limitations", label: "Important Information" },
+  { id: "network", label: "Project Links" },
 ];
 
 const READ_METHODS = [
@@ -70,13 +73,35 @@ const WRITE_METHODS = [
 ];
 
 function DocsPage() {
+  const configurationQuery = useMarketConfiguration();
+  const configuration = configurationQuery.data;
   const [active, setActive] = useState<string>(SECTIONS[0].id);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const assets = configuration?.supported_assets.join(", ") ?? "Unavailable";
+  const quoteAsset = configuration?.quote_asset ?? "—";
+  const minimumStake = configuration ? weiToGen(configuration.minimum_stake) : "—";
+  const maximumStake = configuration ? weiToGen(configuration.maximum_stake_per_wallet) : "—";
+  const exchangeCount = configuration?.configured_source_count ?? "—";
+  const required = configuration?.required_matching_votes ?? "—";
+  const providerNames =
+    configuration?.providers
+      .map((provider) => {
+        if (provider === "GATEIO") return "Gate.io";
+        if (provider === "BINANCE") return "Binance";
+        if (provider === "BYBIT") return "Bybit";
+        if (provider === "BITGET") return "Bitget";
+        return provider;
+      })
+      .join(", ") ?? "the configured exchanges";
 
   useEffect(() => {
     const obs = new IntersectionObserver(
       (entries) => {
-        const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort(
+            (a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top,
+          );
         if (visible[0]) setActive(visible[0].target.id);
       },
       { rootMargin: "-100px 0px -70% 0px", threshold: 0 },
@@ -90,6 +115,25 @@ function DocsPage() {
 
   return (
     <AppShell>
+      {configurationQuery.isRefetchError && configurationQuery.data ? (
+        <div className="mb-5">
+          <ContractRefreshWarning
+            onRetry={() => configurationQuery.refetch()}
+            retrying={configurationQuery.isFetching}
+          />
+        </div>
+      ) : configurationQuery.isError && !configurationQuery.data ? (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
+          <span>Current market settings could not be loaded.</span>
+          <button
+            type="button"
+            className="font-semibold text-warning hover:underline"
+            onClick={() => configurationQuery.refetch()}
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[240px_minmax(0,1fr)]">
         {/* Sidebar */}
         <aside className="hidden lg:block">
@@ -104,7 +148,8 @@ function DocsPage() {
                     href={`#${s.id}`}
                     className={cn(
                       "block rounded-md px-3 py-1.5 text-[13px] text-muted-foreground transition hover:bg-surface hover:text-foreground",
-                      active === s.id && "bg-surface text-foreground border-l-2 border-primary rounded-l-none",
+                      active === s.id &&
+                        "bg-surface text-foreground border-l-2 border-primary rounded-l-none",
                     )}
                   >
                     {s.label}
@@ -141,48 +186,77 @@ function DocsPage() {
 
         {/* Content */}
         <article className="prose-invert max-w-3xl space-y-10 text-[14px] leading-relaxed text-foreground/90">
-          <Section id="overview" title="Protocol overview">
+          <Section id="overview" title="How Mercora Works">
             <p>
-              Mercora is a pari-mutuel prediction market for one-hour crypto candle direction. Each
-              market asks whether the next completed hourly candle for a supported pair will close
-              higher than open. Markets are created by an operator, funded by end users, and
-              resolved deterministically by GenLayer independent validators.
+              Mercora lets users predict whether a cryptocurrency's price will finish higher or
+              lower during a specific one-hour period. An authorized market manager creates each
+              market. Users then choose UP or DOWN.
             </p>
           </Section>
 
-          <Section id="assets" title="Supported assets & format">
+          <Section id="assets" title="Supported Assets">
             <ul>
-              <li><b>Assets:</b> BTC, ETH, BNB, SOL against USDT.</li>
-              <li><b>Format:</b> one-hour candle direction, aligned to whole UTC hours.</li>
-              <li><b>Symbols used:</b> <code className="text-mono">BTCUSDT</code>, <code className="text-mono">ETHUSDT</code>, <code className="text-mono">BNBUSDT</code>, <code className="text-mono">SOLUSDT</code>.</li>
+              <li>
+                <b>Assets:</b> {assets} against {quoteAsset}.
+              </li>
+              <li>
+                <b>Format:</b> one-hour price periods that start at a full UTC hour.
+              </li>
+              <li>
+                <b>Symbols used:</b> <code className="text-mono">BTCUSDT</code>,{" "}
+                <code className="text-mono">ETHUSDT</code>,{" "}
+                <code className="text-mono">BNBUSDT</code>,{" "}
+                <code className="text-mono">SOLUSDT</code>.
+              </li>
             </ul>
           </Section>
 
-          <Section id="lifecycle" title="Lifecycle & statuses">
-            <p>Each market moves through a strict set of on-chain statuses:</p>
+          <Section id="lifecycle" title="Market Stages">
+            <p>Each market moves through the following stages:</p>
             <ul>
-              <li><StatusPill>OPEN</StatusPill> — accepting bets.</li>
-              <li><StatusPill>CLOSED</StatusPill> — betting window ended, candle not yet complete.</li>
-              <li><StatusPill>READY_FOR_SETTLEMENT</StatusPill> — settle window reached; anyone may trigger settlement.</li>
-              <li><StatusPill>SETTLED</StatusPill> — outcome recorded (<span className="text-up">UP</span> or <span className="text-down">DOWN</span>).</li>
-              <li><StatusPill>INCONCLUSIVE</StatusPill> — fewer than 3-of-5 matching votes; refunds available.</li>
-              <li><StatusPill>CANCELLED</StatusPill> — one-sided or empty pool; refunds available.</li>
+              <li>
+                <StatusPill>Betting Open</StatusPill> — users can choose UP or DOWN.
+              </li>
+              <li>
+                <StatusPill>Price Period Active</StatusPill> — betting is closed while the one-hour
+                period runs.
+              </li>
+              <li>
+                <StatusPill>Ready for Result</StatusPill> — the final prices can be checked.
+              </li>
+              <li>
+                <StatusPill>Result Confirmed</StatusPill> — UP or DOWN has won.
+              </li>
+              <li>
+                <StatusPill>No Clear Result</StatusPill> — fewer than {required} exchanges agreed.
+              </li>
+              <li>
+                <StatusPill>Cancelled</StatusPill> — the market could not continue.
+              </li>
             </ul>
           </Section>
 
-          <Section id="betting" title="Betting rules & limits">
+          <Section id="betting" title="Betting Limits">
             <ul>
-              <li>Minimum stake: <span className="text-mono">1 GEN</span>.</li>
-              <li>Maximum stake: <span className="text-mono">10 GEN</span> per wallet per market.</li>
-              <li>Only one side per wallet per market.</li>
-              <li>Bets accepted until <span className="text-mono">betting_close_time</span>.</li>
+              <li>
+                Minimum stake: <span className="text-mono">{minimumStake} GEN</span>.
+              </li>
+              <li>
+                Maximum stake: <span className="text-mono">{maximumStake} GEN</span> per account per
+                market.
+              </li>
+              <li>Each account can choose only one direction per market.</li>
+              <li>Betting closes when the one-hour price period begins.</li>
             </ul>
           </Section>
 
-          <Section id="payout" title="Payout formula & example">
-            <p>Pari-mutuel: winners share the losing pool proportionally to their stake.</p>
+          <Section id="payout" title="How Payouts Work">
+            <p>
+              All bets are placed into one shared pool. Winners share the losing side's pool based
+              on how much they contributed.
+            </p>
             <pre className="rounded-lg border border-border bg-surface p-3 text-mono text-[12px]">
-{`payout = stake + (stake / winning_pool) * losing_pool`}
+              {`payout = stake + (stake / winning_pool) * losing_pool`}
             </pre>
             <p>
               Example: pools UP=100, DOWN=60, your UP stake=10. If UP wins:
@@ -191,83 +265,98 @@ function DocsPage() {
             </p>
           </Section>
 
-          <Section id="settlement" title="Five-source settlement">
+          <Section id="settlement" title="How Prices Are Checked">
             <p>
-              GenLayer validators fetch open + close prices from all five providers: Binance, Bybit,
-              Gate.io, MEXC, and Bitget. Each provider yields a single direction vote.
+              Settlement is the process of confirming the final market result. Mercora compares
+              opening and closing prices from {providerNames}. Each exchange reports whether the
+              price finished UP or DOWN.
             </p>
           </Section>
 
-          <Section id="consensus" title="3-of-5 consensus">
+          <Section id="consensus" title="How a Result Is Confirmed">
             <p>
-              A market resolves when at least three providers vote for the same direction. Fewer
-              than three matching votes marks the market <StatusPill>INCONCLUSIVE</StatusPill>.
+              At least {required} of {exchangeCount} exchanges must report the same direction before
+              a result is confirmed. If fewer than {required} agree, the market finishes without a
+              clear result.
             </p>
           </Section>
 
-          <Section id="inconclusive" title="Inconclusive & cancelled">
+          <Section id="inconclusive" title="Markets Without a Clear Result">
             <ul>
-              <li><StatusPill>INCONCLUSIVE</StatusPill>: consensus not reached. Refund every bettor.</li>
-              <li><StatusPill>CANCELLED</StatusPill>: one-sided or empty pool. Refund every bettor.</li>
+              <li>
+                <StatusPill>No Clear Result</StatusPill>: fewer than {required} exchanges agreed.
+                All participants can claim a refund.
+              </li>
+              <li>
+                <StatusPill>Cancelled</StatusPill>: bets were placed on only one side, or no bets
+                were placed. All participants can claim a refund.
+              </li>
             </ul>
           </Section>
 
-          <Section id="claims" title="Claims & refunds">
+          <Section id="claims" title="Claims and Refunds">
             <p>
-              Nothing is auto-transferred. Winners call <code className="text-mono">claim_winnings</code>. Bettors on
-              inconclusive or cancelled markets call <code className="text-mono">claim_refund</code>. Amounts are
-              read from <code className="text-mono">get_claimable_amount</code> and{" "}
-              <code className="text-mono">get_refundable_amount</code>.
+              After a result is confirmed, winners can claim their payout. If a market is cancelled
+              or no clear result can be confirmed, participants can claim a refund. Claims are not
+              sent automatically.
             </p>
           </Section>
 
-          <Section id="permissions" title="Owner / operator permissions">
+          <Section id="permissions" title="Who Can Create and Process Markets">
             <ul>
-              <li>Owner may set the operator via <code className="text-mono">set_market_operator</code>.</li>
-              <li>Operator may create markets and trigger <code className="text-mono">settle_market</code>.</li>
-              <li>Neither owner nor operator can choose outcomes.</li>
+              <li>The owner selects the authorized market manager.</li>
+              <li>
+                The owner or authorized market manager can create markets and start result checks.
+              </li>
+              <li>Neither can choose the winning direction.</li>
             </ul>
           </Section>
 
-          <Section id="trust" title="Frontend vs contract trust model">
+          <Section id="trust" title="How Mercora Protects Market Results">
             <p>
-              This UI is a convenience layer. All authoritative state lives on-chain. Reference
-              charts and estimated payouts are display only — final outcomes and payouts are
-              computed by the contract from validator-fetched evidence.
+              Users cannot submit prices or choose a result. The reference chart and estimated
+              payouts are for display only. The final result uses prices collected directly from the
+              {exchangeCount} exchanges and checked by GenLayer.
             </p>
           </Section>
 
-          <Section id="reads" title="Contract reads">
+          <Section id="reads" title="Available Information">
+            <p>These technical methods provide market, position, claim, and refund information.</p>
             <MethodGrid methods={READ_METHODS} />
           </Section>
 
-          <Section id="writes" title="Contract writes">
+          <Section id="writes" title="Available Actions">
+            <p>These technical methods create markets, submit predictions, and process claims.</p>
             <MethodGrid methods={WRITE_METHODS} kind="write" />
           </Section>
 
-          <Section id="validators" title="Leader / validator flow">
+          <Section id="validators" title="How GenLayer Checks Results">
             <ol>
-              <li>Leader validator proposes settlement transaction.</li>
-              <li>Independent validators fetch the same five providers in isolation.</li>
-              <li>Consensus tally is compared; only matching results are accepted.</li>
-              <li>Outcome and evidence are committed to state.</li>
+              <li>GenLayer receives a proposed result.</li>
+              <li>
+                Other GenLayer participants collect prices from the same {exchangeCount} exchanges.
+              </li>
+              <li>They calculate the direction from the opening and closing prices.</li>
+              <li>The result is confirmed only when the checks agree.</li>
             </ol>
           </Section>
 
-          <Section id="limitations" title="Limitations & risks">
+          <Section id="limitations" title="Important Information">
             <ul>
-              <li>Provider outages can raise the inconclusive rate.</li>
-              <li>Extreme volatility around the hour boundary may cause split votes.</li>
-              <li>The GEN token, gas, and any bridging risks apply — read the network docs.</li>
+              <li>Exchange outages may prevent a clear result.</li>
+              <li>
+                Fast price changes near the hour boundary may produce different exchange results.
+              </li>
+              <li>Only stake an amount you can afford to lose.</li>
             </ul>
           </Section>
 
-          <Section id="network" title="Contract, explorer, network">
+          <Section id="network" title="Project Links">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <Placeholder k="Contract address" v="0x…placeholder" />
-              <Placeholder k="Network" v="GenLayer Testnet" />
-              <Placeholder k="Explorer" v="https://explorer.example/tx/…" />
-              <Placeholder k="Repository" v="github.com/mercora/protocol" />
+              <Placeholder k="Contract address" v="Not configured" />
+              <Placeholder k="Explorer" v="Not configured" />
+              <Placeholder k="GitHub source" v="Not configured" />
+              <Placeholder k="Technical documentation" v="This frontend guide" />
             </div>
           </Section>
         </article>
@@ -276,7 +365,15 @@ function DocsPage() {
   );
 }
 
-function Section({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+function Section({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section id={id} className="scroll-mt-24">
       <h2 className="mb-3 text-xl font-semibold tracking-tight">{title}</h2>
@@ -307,9 +404,7 @@ function MethodGrid({ methods, kind = "read" }: { methods: string[]; kind?: "rea
           <span
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-medium",
-              kind === "read"
-                ? "bg-consensus-soft text-consensus"
-                : "bg-primary/15 text-primary",
+              kind === "read" ? "bg-consensus-soft text-consensus" : "bg-primary/15 text-primary",
             )}
           >
             {kind === "read" ? "READ" : "WRITE"}

@@ -1,249 +1,641 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { addHours, format, startOfHour } from "date-fns";
-import { AppShell } from "@/components/mercora/app-shell";
-import { AssetIcon } from "@/components/mercora/asset-icon";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircle,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  Loader2,
+  ShieldCheck,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/mercora/page-header";
+import { AssetIcon } from "@/components/mercora/asset-icon";
+import { EmptyState } from "@/components/mercora/empty-state";
+import { InjectedConnectButton } from "@/components/mercora/wallet-button";
 import { useWallet } from "@/lib/wallet-context";
-import type { Asset } from "@/lib/mock-data";
-import { MARKETS } from "@/lib/mock-data";
+import { mercoraContract, mercoraWrites, SubmittedTransactionError } from "@/lib/mercora-contract";
+import { mercoraKeys, useMarketConfiguration } from "@/hooks/contract/use-mercora";
+import { getInjectedProvider } from "@/config/mercora";
+import type { Asset } from "@/lib/contract-parsers";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, CheckCircle2, Loader2, Shield, ShieldOff } from "lucide-react";
+import {
+  friendlyCreationValidationReason,
+  getMarketCreationAvailability,
+  utcSelectionToUnix,
+} from "@/lib/contract-ui";
 import { toast } from "sonner";
+import { reconcileCreatedMarket } from "@/lib/reconciliation";
+import { ContractRefreshWarning } from "@/components/mercora/contract-refresh-warning";
+import { contractPolling, invalidateAfterMarketCreation } from "@/lib/contract-refresh-policy";
 
 export const Route = createFileRoute("/admin")({
   component: AdminPage,
-  head: () => ({
-    meta: [{ title: "Admin · Create market — Mercora" }, { name: "robots", content: "noindex" }],
-  }),
 });
 
-type Validation =
-  | "VALID"
-  | "UNSUPPORTED_ASSET"
-  | "NOT_HOUR_ALIGNED"
-  | "NOT_IN_FUTURE"
-  | "INSUFFICIENT_CREATION_LEAD_TIME"
-  | "DUPLICATE_MARKET";
+type TransactionState =
+  | "idle"
+  | "awaiting"
+  | "submitted"
+  | "confirming"
+  | "reconciling"
+  | "syncing"
+  | "processing"
+  | "success"
+  | "error";
 
-const ASSETS: Asset[] = ["BTC", "ETH", "BNB", "SOL"];
-const MIN_LEAD_MIN = 15;
+const assetNames: Record<Asset, string> = {
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  BNB: "BNB",
+  SOL: "Solana",
+};
+
+function formatUtc(seconds: bigint | null): string {
+  if (seconds === null || seconds <= 0n) return "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  })
+    .format(new Date(Number(seconds) * 1_000))
+    .replace(",", " ·")
+    .concat(" UTC");
+}
 
 function AdminPage() {
-  const { wallet, mode } = useWallet();
+  const wallet = useWallet();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const configQuery = useMarketConfiguration();
+  const assets = useMemo(
+    () => configQuery.data?.supported_assets ?? [],
+    [configQuery.data?.supported_assets],
+  );
   const [asset, setAsset] = useState<Asset>("BTC");
-  const [dateStr, setDateStr] = useState<string>(format(addHours(new Date(), 2), "yyyy-MM-dd"));
-  const [hour, setHour] = useState<number>(new Date(startOfHour(addHours(new Date(), 2))).getUTCHours());
-  const [tx, setTx] = useState<"idle" | "awaiting" | "pending" | "confirmed" | "failed">("idle");
+  const [date, setDate] = useState("");
+  const [hour, setHour] = useState("");
+  const [transactionState, setTransactionState] = useState<TransactionState>("idle");
+  const [transactionHash, setTransactionHash] = useState("");
+  const [createdMarketId, setCreatedMarketId] = useState("");
+  const [error, setError] = useState("");
+  const [pendingCreation, setPendingCreation] = useState<{
+    asset: Asset;
+    candleStart: bigint;
+  } | null>(null);
+  const duplicateLookupStarted = useRef(Date.now());
 
-  const openTime = useMemo(() => {
-    const d = new Date(`${dateStr}T00:00:00Z`);
-    d.setUTCHours(hour, 0, 0, 0);
-    return d.getTime();
-  }, [dateStr, hour]);
+  useEffect(() => {
+    if (assets.length > 0 && !assets.includes(asset)) setAsset(assets[0]);
+  }, [asset, assets]);
 
-  const closeTime = openTime + 60 * 60 * 1000;
-  const bettingClose = closeTime - 60_000;
-  const settleAfter = closeTime + 5 * 60_000;
+  const candleStart = useMemo(() => utcSelectionToUnix(date, hour), [date, hour]);
+  const validationQuery = useQuery({
+    queryKey: [
+      ...mercoraKeys.validation(asset, candleStart ?? 0n),
+      String(wallet.chainId),
+    ] as const,
+    queryFn: () => mercoraContract.validateMarketCreation(asset, candleStart!),
+    enabled: Boolean(candleStart && configQuery.data),
+    staleTime: 5_000,
+    refetchInterval: contractPolling.validation,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchOnMount: "always",
+  });
+  const validation = validationQuery.data;
+  const duplicateLookupQuery = useQuery({
+    queryKey: mercoraKeys.lookup(asset, candleStart ?? 0n),
+    queryFn: async () => {
+      const lookup = await mercoraContract.getMarketIdByKey(asset, candleStart!);
+      if (!lookup.exists || !lookup.market_id) return null;
+      const id = BigInt(lookup.market_id);
+      if (!(await mercoraContract.marketExists(id))) return null;
+      await mercoraContract.getMarket(id);
+      return lookup.market_id;
+    },
+    enabled: Boolean(candleStart && validation?.reason === "DUPLICATE_MARKET"),
+    refetchInterval: (query) =>
+      query.state.data || Date.now() - duplicateLookupStarted.current >= 75_000 ? false : 2_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+  const existingMarketId =
+    validation?.reason === "DUPLICATE_MARKET" ? duplicateLookupQuery.data || "" : "";
+  const transactionPending = [
+    "awaiting",
+    "submitted",
+    "confirming",
+    "reconciling",
+    "syncing",
+    "processing",
+  ].includes(transactionState);
+  const availability = getMarketCreationAvailability({
+    connected: wallet.isConnected,
+    correctNetwork: wallet.isCorrectNetwork,
+    authorizationLoading: wallet.authorizationLoading,
+    authorized: wallet.isAdmin,
+    assetSelected: Boolean(asset),
+    dateSelected: Boolean(date),
+    hourSelected: Boolean(hour),
+    validationLoading: validationQuery.isFetching,
+    validationError: validationQuery.isError,
+    validationValid: validation?.valid === true,
+    validationReason: validation?.reason,
+    pending: transactionPending,
+  });
 
-  const pair = `${asset}USDT`;
-  const question = `Will ${pair} close higher than open for the ${format(openTime, "HH:mm")} UTC hourly candle?`;
+  useEffect(() => {
+    if (validation?.reason === "DUPLICATE_MARKET") {
+      setError("");
+      duplicateLookupStarted.current = Date.now();
+    }
+  }, [validation?.reason]);
 
-  const validation: Validation = useMemo(() => {
-    if (!ASSETS.includes(asset)) return "UNSUPPORTED_ASSET";
-    if (openTime % (60 * 60 * 1000) !== 0) return "NOT_HOUR_ALIGNED";
-    if (openTime <= Date.now()) return "NOT_IN_FUTURE";
-    if (openTime - Date.now() < MIN_LEAD_MIN * 60_000) return "INSUFFICIENT_CREATION_LEAD_TIME";
-    if (MARKETS.some((m) => m.pair === pair && m.openTime === openTime)) return "DUPLICATE_MARKET";
-    return "VALID";
-  }, [asset, openTime, pair]);
-
-  const canCreate = validation === "VALID" && mode === "OPERATOR";
-
-  function submit() {
-    if (!canCreate) return;
-    setTx("awaiting");
-    setTimeout(() => setTx("pending"), 800);
-    setTimeout(() => {
-      const ok = Math.random() > 0.05;
-      setTx(ok ? "confirmed" : "failed");
-      if (ok) toast.success(`Market created: ${pair} · ${format(openTime, "HH:mm 'UTC'")}`);
-      else toast.error("Create transaction failed.");
-    }, 2200);
+  async function checkDuplicateAgain() {
+    duplicateLookupStarted.current = Date.now();
+    await duplicateLookupQuery.refetch();
   }
 
-  return (
-    <AppShell>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">Create market</h1>
-          <p className="text-[13px] text-muted-foreground">
-            Owner / operator-only. Operators may trigger settlement but cannot choose outcomes.
-          </p>
-        </div>
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium",
-            mode === "OPERATOR"
-              ? "border-consensus/40 bg-consensus-soft text-consensus"
-              : "border-warning/40 bg-warning/10 text-warning",
-          )}
-        >
-          {mode === "OPERATOR" ? <Shield className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
-          {mode === "OPERATOR"
-            ? `Operator · ${wallet?.address}`
-            : "Not operator — switch wallet mode to preview"}
-        </span>
+  async function reconcileCreation(targetAsset: Asset, targetStart: bigint) {
+    setTransactionState("reconciling");
+    setError("");
+    const reconciled = await reconcileCreatedMarket(mercoraContract, targetAsset, targetStart);
+    if (!reconciled.matched || !reconciled.value) {
+      setTransactionState("syncing");
+      return;
+    }
+    setCreatedMarketId(reconciled.value);
+    setTransactionState("success");
+    await invalidateAfterMarketCreation(queryClient, mercoraKeys, {
+      marketId: reconciled.value,
+      asset: targetAsset,
+      candleStart: targetStart,
+    });
+    toast.success("Market created.");
+    setDate("");
+    setHour("");
+    await navigate({ to: "/market/$id", params: { id: reconciled.value } });
+    setPendingCreation(null);
+  }
+
+  async function handleCreate() {
+    if (!availability.enabled || !wallet.address || !candleStart || !validation?.valid) {
+      setError(availability.reason);
+      return;
+    }
+    setError("");
+    setCreatedMarketId("");
+    setTransactionHash("");
+    let confirmed = false;
+    try {
+      if (!wallet.isCorrectNetwork) {
+        await wallet.switchToBradbury();
+        return;
+      }
+      const provider = getInjectedProvider();
+      if (!provider) throw new Error("Connect a browser wallet to continue.");
+      setTransactionState("awaiting");
+      const result = await mercoraWrites.createMarket(
+        wallet.address,
+        provider,
+        asset,
+        candleStart,
+        {
+          onSubmitted: (submittedHash) => {
+            setTransactionHash(submittedHash);
+            setTransactionState("submitted");
+            window.setTimeout(
+              () =>
+                setTransactionState((current) =>
+                  current === "submitted" ? "confirming" : current,
+                ),
+              1_500,
+            );
+          },
+        },
+      );
+      setTransactionHash(result.hash);
+      confirmed = true;
+      const creation = { asset, candleStart };
+      setPendingCreation(creation);
+      await reconcileCreation(creation.asset, creation.candleStart);
+    } catch (caught) {
+      console.error("Market creation failed", caught);
+      if (confirmed) {
+        setError("");
+        setTransactionState("syncing");
+      } else if (caught instanceof SubmittedTransactionError) {
+        setTransactionHash(caught.hash);
+        setError("Your transaction was submitted and is still processing.");
+        setTransactionState("processing");
+      } else {
+        setError(
+          caught instanceof Error ? caught.message : "The market could not be created. Try again.",
+        );
+        setTransactionState("error");
+      }
+    }
+  }
+
+  async function checkCreationAgain() {
+    if (!pendingCreation || transactionState === "reconciling") return;
+    await reconcileCreation(pendingCreation.asset, pendingCreation.candleStart);
+  }
+
+  if (wallet.authorizationLoading || configQuery.isLoading) {
+    return (
+      <div className="flex min-h-[55vh] items-center justify-center">
+        <Loader2 className="h-7 w-7 animate-spin text-primary" />
       </div>
+    );
+  }
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="space-y-5">
-          <section className="rounded-2xl border border-border bg-card p-5">
-            <h2 className="text-sm font-semibold">Asset</h2>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {ASSETS.map((a) => (
-                <button
-                  key={a}
-                  onClick={() => setAsset(a)}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left transition",
-                    asset === a
-                      ? "border-primary/60 bg-primary/10"
-                      : "border-border bg-surface hover:border-border-strong",
-                  )}
-                >
-                  <AssetIcon asset={a} size={22} />
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-medium">{a}USDT</div>
-                    <div className="text-[11px] text-muted-foreground">1H direction</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-border bg-card p-5">
-            <h2 className="text-sm font-semibold">Candle window (UTC)</h2>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
-              <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted-foreground">
-                  UTC Date
-                </label>
-                <Input
-                  type="date"
-                  value={dateStr}
-                  onChange={(e) => setDateStr(e.target.value)}
-                  className="h-11 text-mono"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted-foreground">
-                  UTC Hour
-                </label>
-                <select
-                  value={hour}
-                  onChange={(e) => setHour(parseInt(e.target.value))}
-                  className="h-11 w-full rounded-md border border-border bg-surface px-3 text-mono text-[13px]"
-                >
-                  {Array.from({ length: 24 }).map((_, h) => (
-                    <option key={h} value={h}>
-                      {h.toString().padStart(2, "0")}:00
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              Markets must be aligned to a whole UTC hour and created at least {MIN_LEAD_MIN} minutes
-              before candle open.
+  if (!wallet.isConnected || !wallet.isAdmin || wallet.authorizationError) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
+        <PageHeader
+          title="Create a Market"
+          description="Create an approved one-hour crypto market using contract-defined rules."
+        />
+        {!wallet.isConnected ? (
+          <div className="rounded-xl border border-border bg-card p-8 text-center">
+            <ShieldCheck className="mx-auto h-8 w-8 text-primary" />
+            <h2 className="mt-3 font-display text-lg font-semibold">Authorized account required</h2>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+              Connect the owner or authorized market-manager account to create markets.
             </p>
-          </section>
+            <InjectedConnectButton className="mt-5" />
+          </div>
+        ) : wallet.authorizationError ? (
+          <EmptyState
+            icon={AlertCircle}
+            title="Authorization could not be checked"
+            description="The owner and market-manager addresses could not be loaded."
+            actionLabel="Try Again"
+            onAction={() => queryClient.invalidateQueries({ queryKey: mercoraKeys.stats })}
+          />
+        ) : (
+          <EmptyState
+            icon={ShieldCheck}
+            title="Authorized account required"
+            description="Only the owner or authorized market manager can create markets."
+            actionLabel="Return to Markets"
+            to="/"
+          />
+        )}
+      </div>
+    );
+  }
 
-          <section className="rounded-2xl border border-border bg-card p-5">
-            <h2 className="text-sm font-semibold">Validation</h2>
-            <div className="mt-3">
-              <ValidationRow ok={validation !== "UNSUPPORTED_ASSET"} label="Supported asset" />
-              <ValidationRow ok={validation !== "NOT_HOUR_ALIGNED"} label="Hour-aligned open time" />
-              <ValidationRow ok={validation !== "NOT_IN_FUTURE"} label="Open time in the future" />
-              <ValidationRow
-                ok={validation !== "INSUFFICIENT_CREATION_LEAD_TIME"}
-                label={`At least ${MIN_LEAD_MIN}m lead time`}
-              />
-              <ValidationRow ok={validation !== "DUPLICATE_MARKET"} label="No duplicate market for pair + hour" />
-            </div>
-            {validation !== "VALID" && (
-              <div className="mt-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-[12px] text-warning">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5" />
-                <span>
-                  <span className="text-mono">{validation}</span> — resolve before creating.
-                </span>
-              </div>
-            )}
-          </section>
+  if (configQuery.isError && !configQuery.data) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
+        <EmptyState
+          icon={AlertCircle}
+          title="Market settings could not be loaded"
+          description="Check your connection and try again."
+          actionLabel="Try Again"
+          onAction={() => configQuery.refetch()}
+        />
+      </div>
+    );
+  }
+
+  const displayStart = validation ? BigInt(validation.candle_start) : candleStart;
+  const displayEnd =
+    (validation ? BigInt(validation.candle_end) : null) ??
+    (candleStart && configQuery.data
+      ? candleStart + BigInt(configQuery.data.interval_seconds)
+      : null);
+  const displayResult =
+    (validation ? BigInt(validation.settle_after) : null) ??
+    (displayEnd && configQuery.data
+      ? displayEnd + BigInt(configQuery.data.settlement_safety_delay_seconds)
+      : null);
+  const pair = validation?.pair || `${asset}${configQuery.data?.quote_asset ?? ""}`;
+  const question =
+    displayStart && displayEnd
+      ? `Will ${assetNames[asset]} finish higher than it started between ${formatUtc(displayStart)} and ${formatUtc(displayEnd)}?`
+      : "Choose a date and UTC hour to generate the market question.";
+
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+      <PageHeader
+        title="Create a Market"
+        description="Choose an asset and a one-hour period. All market rules are set by Mercora."
+      />
+      {configQuery.isRefetchError && configQuery.data ? (
+        <ContractRefreshWarning
+          onRetry={() => configQuery.refetch()}
+          retrying={configQuery.isFetching}
+        />
+      ) : null}
+      {wallet.authorizationRefreshError && wallet.protocolStats ? (
+        <div className="mt-3">
+          <ContractRefreshWarning
+            message="Authorization details could not be refreshed. Retrying…"
+            onRetry={() => queryClient.invalidateQueries({ queryKey: mercoraKeys.stats })}
+          />
         </div>
+      ) : null}
 
-        {/* Preview */}
-        <aside className="space-y-4">
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <div className="mb-3 text-[11px] uppercase tracking-wide text-muted-foreground">Preview</div>
-            <div className="flex items-center gap-2">
-              <AssetIcon asset={asset} size={22} />
-              <div>
-                <div className="text-sm font-semibold">{pair}</div>
-                <div className="text-[11px] text-muted-foreground text-mono">1H · UTC</div>
+      <div className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="rounded-xl border border-border bg-card p-5 sm:p-6">
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Label>Select Asset</Label>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {assets.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    disabled={transactionPending}
+                    onClick={() => {
+                      setAsset(item);
+                      setTransactionState("idle");
+                      setError("");
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg border px-3 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                      item === asset
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-secondary/35 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <AssetIcon asset={item} size={22} />
+                    {item}
+                  </button>
+                ))}
               </div>
             </div>
-            <p className="mt-3 text-[13px] text-muted-foreground">{question}</p>
+            <div>
+              <Label htmlFor="market-date">Start Date</Label>
+              <Input
+                id="market-date"
+                type="date"
+                value={date}
+                disabled={transactionPending}
+                onChange={(event) => {
+                  setDate(event.target.value);
+                  setTransactionState("idle");
+                  setError("");
+                }}
+                className="mt-2"
+              />
+            </div>
+            <div>
+              <Label htmlFor="market-hour">Start Time (UTC)</Label>
+              <select
+                id="market-hour"
+                value={hour}
+                disabled={transactionPending}
+                onChange={(event) => {
+                  setHour(event.target.value);
+                  setTransactionState("idle");
+                  setError("");
+                }}
+                className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="">Select a full UTC hour</option>
+                {Array.from({ length: 24 }, (_, index) => (
+                  <option key={index} value={String(index).padStart(2, "0")}>
+                    {String(index).padStart(2, "0")}:00 UTC
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
-            <dl className="mt-4 divide-y divide-border rounded-lg border border-border bg-surface">
-              <Row k="Candle open" v={format(openTime, "yyyy-MM-dd HH:mm 'UTC'")} />
-              <Row k="Candle close" v={format(closeTime, "yyyy-MM-dd HH:mm 'UTC'")} />
-              <Row k="Betting close" v={format(bettingClose, "HH:mm:ss 'UTC'")} />
-              <Row k="Settle after" v={format(settleAfter, "HH:mm 'UTC'")} />
-            </dl>
+          <div className="mt-6 rounded-lg border border-border bg-secondary/25 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              {validationQuery.isFetching ? (
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              ) : validation?.valid ? (
+                <CheckCircle2 className="h-4 w-4 text-up" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-amber-400" />
+              )}
+              Validation Summary
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {validationQuery.isError
+                ? "The selected market could not be checked. Try again."
+                : !date
+                  ? "Select a start date."
+                  : !hour
+                    ? "Select a full UTC start hour."
+                    : friendlyCreationValidationReason(
+                        validation?.reason,
+                        configQuery.data?.minimum_creation_lead_time_seconds,
+                      )}
+            </p>
+            {existingMarketId ? (
+              <Link
+                to="/market/$id"
+                params={{ id: existingMarketId }}
+                className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
+              >
+                Open Existing Market
+              </Link>
+            ) : validation?.reason === "DUPLICATE_MARKET" ? (
+              <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+                <p>This market already exists. Retrieving it now…</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={duplicateLookupQuery.isFetching}
+                  onClick={checkDuplicateAgain}
+                >
+                  {duplicateLookupQuery.isFetching ? "Checking…" : "Check Again"}
+                </Button>
+              </div>
+            ) : null}
+            {date && hour ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                disabled={validationQuery.isFetching || transactionPending}
+                onClick={() => validationQuery.refetch()}
+              >
+                {validationQuery.isError ? "Retry Validation" : "Refresh Validation"}
+              </Button>
+            ) : null}
+          </div>
 
-            <Button
-              disabled={!canCreate || tx === "awaiting" || tx === "pending"}
-              onClick={submit}
-              className="mt-4 h-11 w-full"
-            >
-              {tx === "awaiting" && <Loader2 className="h-4 w-4 animate-spin" />}
-              {tx === "pending" && <Loader2 className="h-4 w-4 animate-spin" />}
-              {tx === "confirmed" && <CheckCircle2 className="h-4 w-4" />}
-              {tx === "idle" && "Create market"}
-              {tx === "awaiting" && "Awaiting wallet…"}
-              {tx === "pending" && "Confirming on-chain…"}
-              {tx === "confirmed" && "Market created"}
-              {tx === "failed" && "Retry"}
+          {!wallet.isCorrectNetwork ? (
+            <Button className="mt-5 w-full" onClick={wallet.switchToBradbury}>
+              Switch to GenLayer Bradbury
             </Button>
-            {tx === "failed" && (
-              <p className="mt-2 text-[12px] text-down">Transaction failed. Try again.</p>
+          ) : null}
+          <Button
+            className={cn("w-full", wallet.isCorrectNetwork ? "mt-5" : "mt-2")}
+            disabled={!availability.enabled}
+            onClick={handleCreate}
+            aria-describedby="create-market-reason"
+          >
+            {transactionPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {transactionState === "awaiting"
+              ? "Waiting for wallet approval"
+              : transactionState === "submitted"
+                ? "Transaction submitted"
+                : transactionState === "confirming"
+                  ? "Creating market"
+                  : transactionState === "reconciling"
+                    ? "Updating market information…"
+                    : transactionState === "syncing"
+                      ? "Market created"
+                      : transactionState === "processing"
+                        ? "Transaction still processing"
+                        : transactionState === "success"
+                          ? "Market created"
+                          : transactionState === "error"
+                            ? "Create Market"
+                            : "Create Market"}
+          </Button>
+          <p
+            id="create-market-reason"
+            className={cn(
+              "mt-2 text-center text-xs",
+              availability.enabled ? "text-up" : "text-muted-foreground",
             )}
+          >
+            {availability.reason}
+          </p>
+
+          {transactionState === "success" && createdMarketId ? (
+            <div className="mt-4 rounded-lg border border-up/25 bg-up/10 p-4 text-sm">
+              <p className="font-semibold text-up">Market created successfully.</p>
+              <Link
+                to="/market/$id"
+                params={{ id: createdMarketId }}
+                className="mt-2 inline-block font-medium text-foreground hover:text-primary"
+              >
+                View the new market
+              </Link>
+              {transactionHash ? (
+                <p className="mt-2 break-all text-xs text-muted-foreground">
+                  Transaction: {transactionHash}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {transactionState === "reconciling" ? (
+            <div className="mt-4 rounded-lg border border-consensus/25 bg-consensus/10 p-4 text-sm">
+              <p className="font-semibold text-consensus">
+                Market created. Waiting for it to appear…
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Transaction confirmed. Updating market information…
+              </p>
+            </div>
+          ) : null}
+          {transactionState === "syncing" ? (
+            <div className="mt-4 rounded-lg border border-warning/25 bg-warning/10 p-4 text-sm">
+              <p className="font-semibold text-warning">
+                Your transaction was confirmed, but the market is still syncing.
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                You can safely check again without creating another market.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button type="button" size="sm" onClick={checkCreationAgain}>
+                  Check Again
+                </Button>
+                <Button type="button" size="sm" variant="secondary" asChild>
+                  <Link to="/">View Markets</Link>
+                </Button>
+              </div>
+              {transactionHash ? (
+                <p className="mt-2 break-all text-xs text-muted-foreground">
+                  Transaction: {transactionHash}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {validationQuery.isRefetchError && validation ? (
+            <div className="mt-3">
+              <ContractRefreshWarning
+                message="Market validation could not be refreshed. Retrying…"
+                onRetry={() => validationQuery.refetch()}
+                retrying={validationQuery.isFetching}
+              />
+            </div>
+          ) : null}
+          {error ? (
+            <div className="mt-4 rounded-lg border border-destructive/25 bg-destructive/10 p-4 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="h-fit rounded-xl border border-border bg-card p-5 lg:sticky lg:top-24">
+          <h2 className="font-display text-base font-semibold">Review Market</h2>
+          <div className="mt-4 space-y-4 text-sm">
+            <ReviewRow label="Pair" value={pair || "—"} />
+            <ReviewRow
+              label="Price Period"
+              value={
+                displayStart && displayEnd
+                  ? `${formatUtc(displayStart)} — ${formatUtc(displayEnd)}`
+                  : "—"
+              }
+            />
+            <ReviewRow label="Betting Closes" value={formatUtc(displayStart)} />
+            <ReviewRow label="Result Available After" value={formatUtc(displayResult)} />
+            <ReviewRow
+              label="Earliest Allowed Start"
+              value={
+                validation?.minimum_allowed_candle_start
+                  ? formatUtc(BigInt(validation.minimum_allowed_candle_start))
+                  : "—"
+              }
+            />
+          </div>
+          <div className="mt-5 border-t border-border pt-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Generated Market Question
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-foreground">{question}</p>
+          </div>
+          <div className="mt-5 flex gap-3 rounded-lg bg-info/8 p-3 text-xs leading-relaxed text-muted-foreground">
+            <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-info" />
+            <p>
+              Select a one-hour period starting at a full UTC hour. The market must be created at
+              least{" "}
+              {String(BigInt(configQuery.data?.minimum_creation_lead_time_seconds ?? "0") / 60n)}{" "}
+              minutes before betting closes.
+            </p>
+          </div>
+          <div className="mt-3 flex gap-3 rounded-lg bg-secondary/35 p-3 text-xs leading-relaxed text-muted-foreground">
+            <CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p>
+              The connected account is checked here for convenience. Mercora performs the final
+              authorization check.
+            </p>
           </div>
         </aside>
       </div>
-    </AppShell>
-  );
-}
-
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-center justify-between px-3 py-2 text-[12px]">
-      <dt className="text-muted-foreground">{k}</dt>
-      <dd className="text-mono text-foreground">{v}</dd>
     </div>
   );
 }
 
-function ValidationRow({ ok, label }: { ok: boolean; label: string }) {
+function ReviewRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between border-b border-border/60 py-2 text-[13px] last:border-b-0">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={cn("inline-flex items-center gap-1", ok ? "text-up" : "text-down")}>
-        {ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-        {ok ? "OK" : "Invalid"}
-      </span>
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 font-medium text-foreground">{value}</p>
     </div>
   );
 }

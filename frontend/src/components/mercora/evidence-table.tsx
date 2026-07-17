@@ -1,95 +1,78 @@
-import type { Evidence } from "@/lib/mock-data";
+import type { SourceEvidence } from "@/lib/contract-parsers";
 import { cn } from "@/lib/utils";
-import { Check, AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
 
 const PROVIDER_INITIALS: Record<string, string> = {
-  Binance: "BN",
-  Bybit: "BY",
-  "Gate.io": "GA",
+  BINANCE: "BN",
+  BYBIT: "BY",
+  GATEIO: "GA",
   MEXC: "MX",
-  Bitget: "BG",
+  BITGET: "BG",
+};
+const PROVIDER_NAMES: Record<string, string> = {
+  BINANCE: "Binance",
+  BYBIT: "Bybit",
+  GATEIO: "Gate.io",
+  MEXC: "MEXC",
+  BITGET: "Bitget",
 };
 
-export function EvidenceTable({ evidence }: { evidence: Evidence[] }) {
-  const okCount = evidence.filter((e) => e.status === "OK").length;
-  const upVotes = evidence.filter((e) => e.vote === "UP").length;
-  const downVotes = evidence.filter((e) => e.vote === "DOWN").length;
-  const dominant = upVotes >= downVotes ? "UP" : "DOWN";
-  const dominantVotes = Math.max(upVotes, downVotes);
+export function EvidenceTable({ evidence }: { evidence: SourceEvidence[] }) {
+  const available = evidence.filter((item) => item.status === "VALID");
+  const up = available.filter((item) => item.direction === "UP").length;
+  const down = available.filter((item) => item.direction === "DOWN").length;
+  const agreement = Math.max(up, down);
 
   return (
     <div className="rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div className="flex items-center gap-2 text-sm">
           <span className="rounded bg-consensus-soft px-1.5 py-0.5 text-[11px] font-medium text-consensus">
-            GenLayer verified
+            Checked by GenLayer
           </span>
-          <span className="text-muted-foreground text-[13px]">
-            {okCount}/5 valid · {dominantVotes} {dominant} vote{dominantVotes === 1 ? "" : "s"}
+          <span className="text-[13px] text-muted-foreground">
+            {up} UP · {down} DOWN · {available.length} of 5 available
           </span>
         </div>
+        <span className="text-[11px] font-medium text-consensus">
+          {agreement >= 3
+            ? `${agreement === 5 ? "All 5" : `${agreement} of 5`} exchanges agreed`
+            : "Fewer than 3 exchanges agreed"}
+        </span>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            <tr>
-              <th className="px-4 py-2 text-left font-medium">Provider</th>
-              <th className="px-4 py-2 text-left font-medium">Symbol</th>
-              <th className="px-4 py-2 text-right font-medium">Open</th>
-              <th className="px-4 py-2 text-right font-medium">Close</th>
-              <th className="px-4 py-2 text-left font-medium">Vote</th>
-              <th className="px-4 py-2 text-left font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {evidence.map((e) => (
-              <tr key={e.provider} className="text-[13px]">
-                <td className="px-4 py-2.5">
-                  <div className="flex items-center gap-2">
-                    <span className="grid h-6 w-6 place-items-center rounded-full bg-surface-2 border border-border text-[10px] font-semibold text-foreground">
-                      {PROVIDER_INITIALS[e.provider]}
-                    </span>
-                    <span className="font-medium">{e.provider}</span>
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 text-mono text-muted-foreground">{e.symbol}</td>
-                <td className="px-4 py-2.5 text-right text-mono">{e.open}</td>
-                <td className="px-4 py-2.5 text-right text-mono">{e.close}</td>
-                <td className="px-4 py-2.5">
-                  <span
-                    className={cn(
-                      "inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium",
-                      e.vote === "UP" && "bg-up-soft text-up",
-                      e.vote === "DOWN" && "bg-down-soft text-down",
-                      e.vote === "NONE" && "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {e.vote === "NONE" ? "—" : e.vote}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5">
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1 text-[12px]",
-                      e.status === "OK" && "text-up",
-                      e.status === "MISSING" && "text-warning",
-                      e.status === "INVALID" && "text-down",
-                    )}
-                  >
-                    {e.status === "OK" ? (
-                      <Check className="h-3.5 w-3.5" />
-                    ) : e.status === "MISSING" ? (
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                    ) : (
-                      <X className="h-3.5 w-3.5" />
-                    )}
-                    {e.status}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="divide-y divide-border">
+        {evidence.map((item) => (
+          <div
+            key={item.provider}
+            className="grid grid-cols-[minmax(0,1fr)_repeat(3,minmax(70px,auto))] items-center gap-3 px-4 py-3 text-[12px]"
+          >
+            <span className="flex items-center gap-2 font-medium">
+              <span className="grid h-7 w-7 place-items-center rounded-full border border-border bg-surface-2 text-[10px]">
+                {PROVIDER_INITIALS[item.provider]}
+              </span>
+              {PROVIDER_NAMES[item.provider] ?? item.provider}
+            </span>
+            <span className="text-right text-mono">{item.open ?? "—"}</span>
+            <span className="text-right text-mono">{item.close ?? "—"}</span>
+            <span className="flex justify-end">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium",
+                  item.status !== "VALID" && "bg-warning/10 text-warning",
+                  item.direction === "UP" && "bg-up-soft text-up",
+                  item.direction === "DOWN" && "bg-down-soft text-down",
+                )}
+              >
+                {item.status === "VALID" ? (
+                  <Check className="h-3 w-3" />
+                ) : (
+                  <AlertTriangle className="h-3 w-3" />
+                )}
+                {item.status === "VALID" ? item.direction : "Unavailable"}
+              </span>
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

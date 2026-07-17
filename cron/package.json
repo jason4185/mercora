@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "lint": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "smoke": "node scripts/smoke.mjs",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

@@ -1,109 +1,233 @@
-import { Link } from "@tanstack/react-router";
-import { Users, Timer, Coins } from "lucide-react";
-import { format } from "date-fns";
-import type { Market } from "@/lib/mock-data";
-import { impliedProbabilities, totalPool } from "@/lib/mock-data";
+import { useNavigate } from "@tanstack/react-router";
+import { ArrowDown, ArrowUp, CheckCircle2, Clock3, Coins, RotateCcw, Users } from "lucide-react";
+import type { MarketView } from "@/lib/market-view";
+import {
+  marketPercentages,
+  participantLabel,
+  shortMarketQuestion,
+  totalPool,
+} from "@/lib/market-view";
 import { AssetIcon } from "./asset-icon";
 import { StatusBadge } from "./status-badge";
 import { ProbabilityBar } from "./probability-bar";
 import { Countdown } from "./countdown";
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { formatCompactUtcWindow } from "@/lib/format";
+import { useWallet } from "@/lib/wallet-context";
+import { useUserMarketStatus } from "@/hooks/contract/use-mercora";
+import { userMarketResult } from "@/lib/contract-ui";
 
-export function MarketCard({ m }: { m: Market }) {
-  const { up, down } = impliedProbabilities(m);
-  const isOpen = m.status === "OPEN" && Date.now() < m.bettingCloseTime;
+export function MarketCard({ m }: { m: MarketView }) {
+  const navigate = useNavigate();
+  const wallet = useWallet();
+  const { up, down } = marketPercentages(m);
+  const bettingOpen = m.status === "OPEN" && Date.now() < m.bettingCloseTime;
+  const candleRunning = m.status === "CLOSED";
+  const terminal =
+    m.status === "SETTLED" || m.status === "INCONCLUSIVE" || m.status === "CANCELLED";
+  const userStatus = useUserMarketStatus(m.id, wallet.address, {
+    enabled: wallet.isConnected && terminal,
+  });
+  const valid = m.evidence.filter((source) => source.status === "VALID");
+  const upVotes = valid.filter((source) => source.direction === "UP").length;
+  const downVotes = valid.filter((source) => source.direction === "DOWN").length;
+  const matching = Math.max(upVotes, downVotes);
+  const first = valid[0];
+  const movement = first ? Number(first.close) - Number(first.open) : 0;
+  const personalResult =
+    userStatus.isSuccess && userStatus.data?.participated
+      ? userMarketResult({
+          status: userStatus.data,
+          market: { status: m.status, outcome: m.outcome },
+        })
+      : null;
+
+  const open = (side?: "UP" | "DOWN") =>
+    navigate({
+      to: "/market/$id",
+      params: { id: m.id },
+      search: side ? { side } : undefined,
+    });
 
   return (
-    <Link
-      to="/market/$id"
-      params={{ id: m.id }}
-      className="group card-elevated relative flex flex-col rounded-xl p-4 transition hover:border-border-strong hover:shadow-lg hover:shadow-black/20"
+    <article
+      role="link"
+      tabIndex={0}
+      aria-label={`Open ${m.pair} market`}
+      onClick={() => open()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      }}
+      className="group card-elevated relative flex cursor-pointer flex-col rounded-xl p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-xl hover:shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
-        <AssetIcon asset={m.asset} size={22} />
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+        <AssetIcon asset={m.asset} size={20} />
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">{m.pair}</span>
-            <span className="text-mono text-[11px] text-muted-foreground">1H</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[13px] font-semibold">{m.pair}</span>
+            <span className="text-mono text-[10px] text-muted-foreground">1H</span>
           </div>
-          <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-muted-foreground">
-            {m.question}
+          <p className="mt-0.5 min-h-8 text-[12px] leading-4 text-muted-foreground">
+            {shortMarketQuestion(m.asset)}
           </p>
         </div>
         <StatusBadge status={m.status} outcome={m.outcome} />
       </div>
 
-      <div className="mt-3 flex items-center gap-3 text-[11px] text-muted-foreground text-mono">
-        <span>
-          {format(m.openTime, "HH:mm")}–{format(m.closeTime, "HH:mm")} UTC
-        </span>
-        <span className="text-border-strong">•</span>
-        <span>{format(m.openTime, "MMM d")}</span>
+      <div className="mt-2.5 flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+        <span className="text-mono">{formatCompactUtcWindow(m.openTime, m.closeTime)}</span>
+        {bettingOpen ? (
+          <span className="inline-flex items-center gap-1 text-primary">
+            <Clock3 className="h-3 w-3" /> closes <Countdown to={m.bettingCloseTime} />
+          </span>
+        ) : candleRunning ? (
+          <span className="inline-flex items-center gap-1 text-warning">
+            <Clock3 className="h-3 w-3" /> price period ends <Countdown to={m.closeTime} />
+          </span>
+        ) : null}
       </div>
-
-      <div className="mt-3">
-        <ProbabilityBar up={up} down={down} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
-        <div className="flex items-center gap-1.5">
-          <Coins className="h-3.5 w-3.5" />
-          <span className="text-mono text-foreground">{totalPool(m)}</span> GEN
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Users className="h-3.5 w-3.5" />
-          <span className="text-mono text-foreground">{m.bettorCount}</span>
-        </div>
-        <div className="flex items-center justify-end gap-1.5">
-          <Timer className="h-3.5 w-3.5" />
-          {m.status === "OPEN" ? (
-            <Countdown to={m.bettingCloseTime} />
-          ) : m.status === "READY_FOR_SETTLEMENT" ? (
-            <span className="text-consensus">now</span>
-          ) : (
-            <span className="text-mono">closed</span>
-          )}
-        </div>
-      </div>
-
-      {isOpen ? (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="border border-up/30 bg-up-soft text-up hover:bg-up/20"
-            onClick={(e) => e.preventDefault()}
-            asChild
-          >
-            <span>Bet UP</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="border border-down/30 bg-down-soft text-down hover:bg-down/20"
-            onClick={(e) => e.preventDefault()}
-            asChild
-          >
-            <span>Bet DOWN</span>
-          </Button>
-        </div>
-      ) : m.status === "SETTLED" ? (
-        <div className="mt-3 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-          Final:{" "}
-          <span className={m.outcome === "UP" ? "text-up font-medium" : "text-down font-medium"}>
-            {m.outcome}
-          </span>{" "}
-          · 5/5 sources agreed · GenLayer verified
-        </div>
-      ) : m.status === "INCONCLUSIVE" ? (
-        <div className="mt-3 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-          Inconclusive — fewer than 3/5 matching votes. Refunds available.
-        </div>
-      ) : m.status === "CANCELLED" ? (
-        <div className="mt-3 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-          Cancelled — one-sided pool. Refunds available.
+      {personalResult && terminal ? (
+        <div className="mt-2">
+          <span className="inline-flex rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] font-semibold text-foreground">
+            {personalResult.label}
+          </span>
         </div>
       ) : null}
-    </Link>
+
+      <div className="mt-2.5 grid grid-cols-2 gap-2 rounded-lg border border-border/80 bg-background/25 p-2 text-[10.5px] text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <Coins className="h-3 w-3" />{" "}
+          <b className="text-mono font-medium text-foreground">{totalPool(m)} GEN</b>
+        </span>
+        <span className="flex items-center justify-end gap-1.5">
+          <Users className="h-3 w-3" />{" "}
+          <b className="text-mono font-medium text-foreground">{participantLabel(m.bettorCount)}</b>
+        </span>
+      </div>
+
+      {terminal ? (
+        <div className="mt-2.5 flex flex-1 flex-col">
+          {m.status === "SETTLED" && (
+            <div
+              className={cn(
+                "rounded-lg border p-2.5",
+                m.outcome === "UP"
+                  ? "border-up/25 bg-up-soft/40"
+                  : "border-down/25 bg-down-soft/40",
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 text-[12px] font-semibold",
+                    m.outcome === "UP" ? "text-up" : "text-down",
+                  )}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Result Confirmed · {m.outcome}
+                </span>
+                <span className="text-[10.5px] text-consensus">
+                  {matching === 5 ? "All 5 exchanges agreed" : `${matching} of 5 exchanges agreed`}
+                </span>
+              </div>
+              {first && (
+                <p className="mt-1.5 text-mono text-[10.5px] text-muted-foreground">
+                  {Number(first.open).toLocaleString()} → {Number(first.close).toLocaleString()}{" "}
+                  <span className={movement > 0 ? "text-up" : "text-down"}>
+                    ({movement > 0 ? "+" : ""}
+                    {movement.toFixed(2)})
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
+          {m.status === "INCONCLUSIVE" && (
+            <div className="rounded-lg border border-warning/25 bg-warning/[0.06] p-2.5">
+              <p className="text-[12px] font-semibold text-warning">No Clear Result</p>
+              <p className="mt-1 text-[10.5px] text-muted-foreground">
+                Fewer than three exchanges reported the same direction. All participants can claim a
+                refund.
+              </p>
+            </div>
+          )}
+          {m.status === "CANCELLED" && (
+            <div className="rounded-lg border border-border bg-surface p-2.5">
+              <p className="text-[12px] font-semibold">Market Cancelled</p>
+              <p className="mt-1 text-[10.5px] text-muted-foreground">
+                {m.settlementReason ??
+                  "This market was cancelled before the final prices were checked."}
+              </p>
+            </div>
+          )}
+          <p className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+            {m.status === "CANCELLED" ? "Pool split before cancellation" : "Final pool split"}
+          </p>
+          <div className="mt-1 opacity-60">
+            <ProbabilityBar up={up} down={down} hasPredictions={m.hasPredictions} />
+          </div>
+          {(m.status === "INCONCLUSIVE" || m.status === "CANCELLED") && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                open();
+              }}
+              className="mt-2 inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 text-[11px] font-semibold text-warning focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RotateCcw className="h-3.5 w-3.5" /> View Refund
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="mt-2.5">
+            <ProbabilityBar up={up} down={down} hasPredictions={m.hasPredictions} />
+          </div>
+          {bettingOpen ? (
+            <div className="mt-2.5 grid grid-cols-2 gap-2">
+              <DirectionAction side="UP" value={up} onClick={() => open("UP")} />
+              <DirectionAction side="DOWN" value={down} onClick={() => open("DOWN")} />
+            </div>
+          ) : (
+            <div className="mt-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-muted-foreground">
+              {candleRunning
+                ? "The one-hour price period is active. Betting is closed."
+                : "Betting has closed. The final prices are being checked."}
+            </div>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+function DirectionAction({
+  side,
+  value,
+  onClick,
+}: {
+  side: "UP" | "DOWN";
+  value: number;
+  onClick: () => void;
+}) {
+  const Icon = side === "UP" ? ArrowUp : ArrowDown;
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        "inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border text-[12px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        side === "UP"
+          ? "border-up/35 bg-up-soft text-up hover:border-up/70 hover:bg-up/20"
+          : "border-down/35 bg-down-soft text-down hover:border-down/70 hover:bg-down/20",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" /> {side} {Math.round(value * 100)}%
+    </button>
   );
 }

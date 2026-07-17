@@ -3,11 +3,13 @@
   "name": "mercora-settlement-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-15",
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "GENLAYER_NETWORK": "testnet-bradbury",
     "GENLAYER_RPC": "https://rpc-bradbury.genlayer.com",
-    "PAGE_SIZE": "25",
+    "MERCORA_CONTRACT_ADDRESS": "0x0A3Fcc4671b6fF0BffBCDab3B744CFf6d5c7ED05",
+    "MERCORA_OPERATOR_ADDRESS": "0xb88be5f8ed476abc8fb5e6c47b12032f075162b3",
+    "MERCORA_EXTRA_SETTLEMENT_GRACE_SECONDS": "180",
     "GAS_MARGIN_PERCENT": "30"
   },
   "durable_objects": {

@@ -10,16 +10,25 @@ function fmt(ms: number) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
 }
 
-export function Countdown({ to, prefix, className }: { to: number; prefix?: string; className?: string }) {
-  const [ms, setMs] = useState(() => to - Date.now());
+export function Countdown({
+  to,
+  prefix,
+  className,
+}: {
+  to: number;
+  prefix?: string;
+  className?: string;
+}) {
+  const [ms, setMs] = useState<number | null>(null);
   useEffect(() => {
+    setMs(to - Date.now());
     const i = setInterval(() => setMs(to - Date.now()), 1000);
     return () => clearInterval(i);
   }, [to]);
   return (
     <span className={className}>
       {prefix ? <span className="text-muted-foreground mr-1">{prefix}</span> : null}
-      <span className="text-mono">{fmt(ms)}</span>
+      <span className="text-mono">{ms === null ? "--:--" : fmt(ms)}</span>
     </span>
   );
 }
