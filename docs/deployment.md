@@ -13,4 +13,4 @@ Before any explicitly authorized deployment:
 
 Before enabling the settlement worker, derive its public address from the secret `SIGNER_PRIVATE_KEY` and set that exact address as the contract's `market_operator`. The contract rejects settlement submissions from every other wallet except the owner.
 
-`focused_crypto_v2_current` remains empty in `config/mercora.v2.json` until an explicitly authorized deployment finalizes. The deployment utilities are `tests/deployment-diagnostics/deploy-v2.mjs` and `tests/deployment-diagnostics/create-market-write.mjs`; the latter submits only `create_market(asset, candle_start)` from its reviewed input file.
+`focused_crypto_v2_current` remains empty in `config/mercora.v2.json` until an explicitly authorized deployment finalizes.
