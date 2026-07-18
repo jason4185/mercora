@@ -25,6 +25,7 @@ import { canClaimRefund, canClaimWinnings, userMarketResult } from "@/lib/contra
 import { ContractRefreshWarning } from "@/components/mercora/contract-refresh-warning";
 import { claimStateMatches, reconcileContractState } from "@/lib/reconciliation";
 import { invalidateAfterUserWrite } from "@/lib/contract-refresh-policy";
+import { isOpenPortfolioPosition, portfolioSummary } from "@/lib/portfolio-summary";
 
 export const Route = createFileRoute("/portfolio")({
   component: PortfolioPage,
@@ -97,22 +98,17 @@ function PortfolioPage() {
       market: { status: market.status, outcome: market.outcome },
     });
     if (tab === "ALL") return true;
-    if (tab === "ACTIVE") return result.kind === "ACTIVE";
+    if (tab === "ACTIVE")
+      return isOpenPortfolioPosition({
+        market: { status: market.status, outcome: market.outcome },
+        user,
+      });
     if (tab === "CLAIMABLE") return result.kind === "WON_CLAIMABLE";
     if (tab === "REFUNDABLE") return result.kind === "REFUND_AVAILABLE";
     if (tab === "LOST") return result.kind === "LOST";
     return ["WON_CLAIMABLE", "WON_CLAIMED", "LOST", "REFUNDED"].includes(result.kind);
   });
-  const totalStaked = entries.reduce((sum, item) => sum + BigInt(item.user.total_stake), 0n);
-  const winnings = entries.reduce((sum, item) => sum + BigInt(item.user.claimable_amount), 0n);
-  const refunds = entries.reduce((sum, item) => sum + BigInt(item.user.refundable_amount), 0n);
-  const active = entries.filter(
-    (item) =>
-      userMarketResult({
-        status: item.user,
-        market: { status: item.market.status, outcome: item.market.outcome },
-      }).kind === "ACTIVE",
-  ).length;
+  const summary = portfolioSummary(entries);
 
   return (
     <AppShell>
@@ -125,10 +121,22 @@ function PortfolioPage() {
           <ContractRefreshWarning onRetry={() => query.refetch()} retrying={query.isFetching} />
         ) : null}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Summary label="Open Positions" value={String(active)} Icon={Activity} />
-          <Summary label="Available Winnings" value={`${weiToGen(winnings)} GEN`} Icon={Coins} />
-          <Summary label="Available Refunds" value={`${weiToGen(refunds)} GEN`} Icon={Coins} />
-          <Summary label="Total Staked" value={`${weiToGen(totalStaked)} GEN`} Icon={Activity} />
+          <Summary label="Open Positions" value={String(summary.openPositions)} Icon={Activity} />
+          <Summary
+            label="Available Winnings"
+            value={`${weiToGen(summary.winnings)} GEN`}
+            Icon={Coins}
+          />
+          <Summary
+            label="Available Refunds"
+            value={`${weiToGen(summary.refunds)} GEN`}
+            Icon={Coins}
+          />
+          <Summary
+            label="Total Staked"
+            value={`${weiToGen(summary.totalStaked)} GEN`}
+            Icon={Activity}
+          />
         </div>
         <div className="flex flex-wrap gap-1 rounded-lg border border-border bg-surface p-1">
           {TABS.map((item) => (

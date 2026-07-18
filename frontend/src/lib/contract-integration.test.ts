@@ -42,6 +42,11 @@ import {
   shortMarketQuestion,
   toMarketView,
 } from "./market-view";
+import {
+  isOpenPortfolioPosition,
+  portfolioSummary,
+  type PortfolioSummaryEntry,
+} from "./portfolio-summary";
 import { formatCompactUtcWindow } from "./format";
 import { contractNotifications } from "./notifications";
 import {
@@ -239,6 +244,48 @@ function settledMarket(outcome: "UP" | "DOWN" | "INCONCLUSIVE" | "CANCELLED" = "
     ),
     { up_bps: "5000", down_bps: "5000" },
   );
+}
+
+function portfolioEntry({
+  marketId = "4",
+  displayStatus = "OPEN",
+  finalOutcome = "NONE",
+  user = {},
+}: {
+  marketId?: string;
+  displayStatus?: PortfolioSummaryEntry["market"]["status"];
+  finalOutcome?: PortfolioSummaryEntry["market"]["outcome"];
+  user?: Partial<UserMarketStatus>;
+} = {}): PortfolioSummaryEntry {
+  const storedStatus =
+    displayStatus === "SETTLED" || displayStatus === "INCONCLUSIVE" || displayStatus === "CANCELLED"
+      ? displayStatus
+      : "OPEN";
+  return {
+    market: toMarketView(
+      parseMarket(
+        {
+          ...marketFixture,
+          market_id: marketId,
+          status: storedStatus,
+          final_outcome: finalOutcome,
+        },
+        displayStatus,
+      ),
+    ),
+    user: userStatus({
+      market_id: marketId,
+      market_status: storedStatus,
+      display_status: displayStatus,
+      final_outcome: finalOutcome,
+      user_result: "PENDING",
+      claimable_amount: "0",
+      refundable_amount: "0",
+      claimed: false,
+      claimed_amount: "0",
+      ...user,
+    }),
+  };
 }
 
 describe("exact GEN conversion", () => {
@@ -527,6 +574,148 @@ describe("contract-backed losing notifications", () => {
     expect(second.map((item) => item.id)).toEqual([
       "0x0000000000000000000000000000000000000003-4-lost",
     ]);
+  });
+});
+
+describe("Portfolio summary", () => {
+  test("positive-stake Waiting for result row counts as one open position", () => {
+    const row = portfolioEntry({ displayStatus: "READY_FOR_SETTLEMENT" });
+    expect(userMarketResult({ status: row.user, market: row.market }).kind).toBe(
+      "WAITING_FOR_RESULT",
+    );
+    expect(portfolioSummary([row]).openPositions).toBe(1);
+  });
+
+  test("betting-open unresolved row counts as open", () => {
+    const row = portfolioEntry({ displayStatus: "OPEN" });
+    expect(isOpenPortfolioPosition(row)).toBe(true);
+    expect(portfolioSummary([row]).openPositions).toBe(1);
+  });
+
+  test("betting-closed but unresolved row counts as open", () => {
+    const row = portfolioEntry({ displayStatus: "CLOSED" });
+    expect(isOpenPortfolioPosition(row)).toBe(true);
+    expect(portfolioSummary([row]).openPositions).toBe(1);
+  });
+
+  test("settlement-pending row counts as open", () => {
+    const row = portfolioEntry({ displayStatus: "READY_FOR_SETTLEMENT" });
+    expect(isOpenPortfolioPosition(row)).toBe(true);
+    expect(portfolioSummary([row]).openPositions).toBe(1);
+  });
+
+  test("won but unclaimed position does not count as open", () => {
+    const row = portfolioEntry({
+      displayStatus: "SETTLED",
+      finalOutcome: "UP",
+      user: { user_result: "WON", claimable_amount: "0" },
+    });
+    expect(isOpenPortfolioPosition(row)).toBe(false);
+    expect(portfolioSummary([row]).openPositions).toBe(0);
+  });
+
+  test("lost position does not count as open", () => {
+    const row = portfolioEntry({
+      displayStatus: "SETTLED",
+      finalOutcome: "DOWN",
+      user: { user_result: "LOST" },
+    });
+    expect(isOpenPortfolioPosition(row)).toBe(false);
+    expect(portfolioSummary([row]).openPositions).toBe(0);
+  });
+
+  test("claimable winning position contributes to winnings, not open positions", () => {
+    const row = portfolioEntry({
+      displayStatus: "SETTLED",
+      finalOutcome: "UP",
+      user: {
+        user_result: "WON",
+        claimable_amount: (2n * WEI_PER_GEN).toString(),
+      },
+    });
+    const summary = portfolioSummary([row]);
+    expect(summary.openPositions).toBe(0);
+    expect(summary.winnings).toBe(2n * WEI_PER_GEN);
+  });
+
+  test("refundable position contributes to refunds, not open positions", () => {
+    const row = portfolioEntry({
+      displayStatus: "INCONCLUSIVE",
+      finalOutcome: "INCONCLUSIVE",
+      user: {
+        user_result: "REFUND_AVAILABLE",
+        refundable_amount: WEI_PER_GEN.toString(),
+      },
+    });
+    const summary = portfolioSummary([row]);
+    expect(summary.openPositions).toBe(0);
+    expect(summary.refunds).toBe(WEI_PER_GEN);
+  });
+
+  test("claimed position does not count as open", () => {
+    const row = portfolioEntry({
+      displayStatus: "SETTLED",
+      finalOutcome: "UP",
+      user: {
+        user_result: "CLAIMED",
+        claimed: true,
+        claimed_amount: (2n * WEI_PER_GEN).toString(),
+      },
+    });
+    expect(isOpenPortfolioPosition(row)).toBe(false);
+    expect(portfolioSummary([row]).openPositions).toBe(0);
+  });
+
+  test("multiple unresolved positions produce the correct count", () => {
+    const entries = [
+      portfolioEntry({ marketId: "4", displayStatus: "OPEN" }),
+      portfolioEntry({ marketId: "5", displayStatus: "CLOSED" }),
+      portfolioEntry({ marketId: "6", displayStatus: "READY_FOR_SETTLEMENT" }),
+      portfolioEntry({
+        marketId: "7",
+        displayStatus: "SETTLED",
+        finalOutcome: "DOWN",
+        user: { user_result: "LOST" },
+      }),
+    ];
+    expect(portfolioSummary(entries).openPositions).toBe(3);
+  });
+
+  test("zero-stake rows do not count", () => {
+    const row = portfolioEntry({
+      displayStatus: "OPEN",
+      user: {
+        total_stake: "0",
+        up_stake: "0",
+      },
+    });
+    expect(isOpenPortfolioPosition(row)).toBe(false);
+    expect(portfolioSummary([row]).openPositions).toBe(0);
+  });
+
+  test("summary uses existing Portfolio data without introducing a new contract read", async () => {
+    const source = await routeSource("portfolio.tsx");
+    const pageSection = source.slice(0, source.indexOf("function PositionAction"));
+    expect(pageSection).toContain("portfolioSummary(entries)");
+    expect(pageSection.match(/= useUserPortfolio\(/g)?.length).toBe(1);
+    expect(pageSection).not.toContain("useClaimableAmount");
+    expect(pageSection).not.toContain("useRefundableAmount");
+    expect(pageSection).not.toContain("getClaimableAmount");
+    expect(pageSection).not.toContain("getRefundableAmount");
+  });
+
+  test("summary preserves total staked while counting open positions", () => {
+    const summary = portfolioSummary([
+      portfolioEntry({ marketId: "4", displayStatus: "OPEN" }),
+      portfolioEntry({
+        marketId: "5",
+        displayStatus: "SETTLED",
+        finalOutcome: "DOWN",
+        user: { user_result: "LOST", total_stake: (3n * WEI_PER_GEN).toString() },
+      }),
+    ]);
+    expect(summary.openPositions).toBe(1);
+    expect(summary.totalStaked).toBe(4n * WEI_PER_GEN);
   });
 });
 
