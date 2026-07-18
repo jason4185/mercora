@@ -1,14 +1,16 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type { MarketStatus, UserMarketStatus } from "./contract-parsers";
 import { userMarketResult } from "./contract-ui";
+import { contractReadCooldownRemaining } from "./contract-read-policy";
 
 export const contractPolling = {
-  activeMarketList: 12_000,
-  allMarketList: 15_000,
+  activeMarketList: 18_000,
+  allMarketList: 20_000,
+  dueMarketList: 15_000,
   completedMarketList: 60_000,
-  activeMarket: 10_000,
+  activeMarket: 15_000,
   finalMarket: 60_000,
-  activeUser: 10_000,
+  activeUser: 15_000,
   stableUser: 60_000,
   protocolConfig: 300_000,
   protocolStats: 60_000,
@@ -22,7 +24,13 @@ export function isFinalMarketStatus(status: MarketStatus | undefined): boolean {
 export function marketListRefetchInterval(kind: string): number {
   if (kind === "completed") return contractPolling.completedMarketList;
   if (kind === "all") return contractPolling.allMarketList;
+  if (kind === "due") return contractPolling.dueMarketList;
   return contractPolling.activeMarketList;
+}
+
+export function rateLimitAwareInterval(interval: number): number {
+  const remaining = contractReadCooldownRemaining();
+  return remaining > 0 ? Math.max(interval, remaining + 1_000) : interval;
 }
 
 export function marketRefetchInterval(status: MarketStatus | undefined): number {

@@ -22,8 +22,11 @@ import {
 } from "./contract-ui";
 import { marketPageReadMethod, mercoraCalls, SubmittedTransactionError } from "./mercora-contract";
 import {
+  contractRateLimitRetryDelay,
   contractReadQueryPolicy,
+  contractReadCooldownRemaining,
   contractReadRetryDelay,
+  isContractRateLimitError,
   shouldRetryContractRead,
 } from "./contract-read-policy";
 import {
@@ -52,7 +55,14 @@ import {
   portfolioRefetchInterval,
   userStatusRefetchInterval,
 } from "./contract-refresh-policy";
+import {
+  resolveSelectedWalletProviderForWrite,
+  walletErrorMessage,
+  type WalletWriteInput,
+} from "./wallet-write";
 import { mercoraKeys } from "@/hooks/contract/use-mercora";
+import type { EIP1193Provider } from "viem";
+import type { Connector } from "wagmi";
 
 const marketFixture = {
   market_id: "4",
@@ -92,6 +102,74 @@ const marketFixture = {
     reason: "NOT_SETTLED",
   },
 };
+
+function providerWithState(input: {
+  accounts: string[];
+  chainId?: number;
+  name?: "MetaMask" | "Rabby";
+  rejectSwitch?: boolean;
+  unknownBeforeAdd?: boolean;
+}) {
+  let chainId = input.chainId ?? wagmiConfig.chains[0].id;
+  let switchCalls = 0;
+  let addCalls = 0;
+  const calls: string[] = [];
+  const provider = {
+    isMetaMask: input.name === "MetaMask" || undefined,
+    isRabby: input.name === "Rabby" || undefined,
+    request: async ({ method, params }: { method: string; params?: unknown[] }) => {
+      calls.push(method);
+      if (method === "eth_accounts") return input.accounts;
+      if (method === "eth_chainId") return `0x${chainId.toString(16)}`;
+      if (method === "wallet_switchEthereumChain") {
+        switchCalls += 1;
+        if (input.rejectSwitch) throw { code: 4001, message: "User rejected" };
+        if (input.unknownBeforeAdd && addCalls === 0)
+          throw { code: 4902, message: "Unknown chain" };
+        const target = params?.[0] as { chainId?: string };
+        chainId = Number.parseInt(target.chainId ?? "0x0", 16);
+        return null;
+      }
+      if (method === "wallet_addEthereumChain") {
+        addCalls += 1;
+        const target = params?.[0] as { chainId?: string };
+        chainId = Number.parseInt(target.chainId ?? "0x0", 16);
+        return null;
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  } as EIP1193Provider & { isMetaMask?: true; isRabby?: true };
+  return {
+    provider,
+    calls,
+    get switchCalls() {
+      return switchCalls;
+    },
+    get addCalls() {
+      return addCalls;
+    },
+  };
+}
+
+function connectorForProvider(provider: EIP1193Provider, name = "MetaMask") {
+  return {
+    id: name.toLowerCase(),
+    name,
+    getProvider: async () => provider,
+  } as Connector;
+}
+
+function walletInput(provider: EIP1193Provider, address: string): WalletWriteInput {
+  return {
+    connector: connectorForProvider(provider),
+    address: address as `0x${string}`,
+    chainId: wagmiConfig.chains[0].id,
+    operation: "placeBet",
+    functionName: "place_bet",
+    args: [4n, "UP"],
+    value: genToWei("1"),
+  };
+}
 
 function userStatus(overrides: Partial<UserMarketStatus> = {}): UserMarketStatus {
   return {
@@ -446,7 +524,7 @@ describe("automatic contract refresh policy", () => {
     expect(marketRefetchInterval("READY_FOR_SETTLEMENT")).toBe(contractPolling.activeMarket);
     expect(marketRefetchInterval("SETTLED")).toBe(contractPolling.finalMarket);
     expect(marketListRefetchInterval("completed")).toBe(contractPolling.completedMarketList);
-    expect(marketListRefetchInterval("due")).toBe(contractPolling.activeMarketList);
+    expect(marketListRefetchInterval("due")).toBe(contractPolling.dueMarketList);
   });
 
   test("connected-user results poll quickly until the final user state is stable", () => {
@@ -750,6 +828,20 @@ describe("contract read reliability", () => {
     expect(contractReadRetryDelay(2)).toBe(4_000);
   });
 
+  test("uses extended cooldown and jitter for rate-limit responses", () => {
+    const originalRandom = Math.random;
+    Math.random = () => 0;
+    try {
+      const error = new Error("GenLayer RPC error (gen_call): rate limit exceeded");
+      expect(isContractRateLimitError(error)).toBe(true);
+      expect(shouldRetryContractRead(3, error)).toBe(true);
+      expect(contractRateLimitRetryDelay(0)).toBe(15_000);
+      expect(contractReadCooldownRemaining()).toBeGreaterThan(0);
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
   test("does not retry a permanent read error", async () => {
     let attempts = 0;
     const client = new QueryClient();
@@ -790,6 +882,76 @@ describe("contract read reliability", () => {
     expect(
       collectionReadState({ isLoading: false, isError: false, hasData: true, itemCount: 0 }),
     ).toBe("empty");
+  });
+});
+
+describe("selected wallet write pipeline", () => {
+  const account = "0x00000000000000000000000000000000000000a1";
+
+  test("uses the selected MetaMask provider instead of a global injected provider", async () => {
+    const selected = providerWithState({ accounts: [account], name: "MetaMask" });
+    const other = providerWithState({
+      accounts: ["0x00000000000000000000000000000000000000b2"],
+      name: "Rabby",
+    });
+    globalThis.window = { ethereum: other.provider } as typeof globalThis.window;
+    const provider = await resolveSelectedWalletProviderForWrite(
+      walletInput(selected.provider, account),
+    );
+    expect(provider).toBe(selected.provider);
+    expect(selected.calls).toContain("eth_accounts");
+    expect(other.calls).toEqual([]);
+  });
+
+  test("uses the selected Rabby provider when Rabby is selected", async () => {
+    const rabby = providerWithState({ accounts: [account], name: "Rabby" });
+    const provider = await resolveSelectedWalletProviderForWrite(
+      walletInput(rabby.provider, account),
+    );
+    expect(provider).toBe(rabby.provider);
+  });
+
+  test("stops before submission when the provider account does not match", async () => {
+    const metamask = providerWithState({
+      accounts: ["0x00000000000000000000000000000000000000ff"],
+      name: "MetaMask",
+    });
+    await expect(
+      resolveSelectedWalletProviderForWrite(walletInput(metamask.provider, account)),
+    ).rejects.toThrow("selected wallet does not match");
+    expect(metamask.calls).not.toContain("eth_sendTransaction");
+  });
+
+  test("switches to Bradbury and adds the chain when the wallet reports it as unknown", async () => {
+    const wallet = providerWithState({
+      accounts: [account],
+      chainId: 1,
+      name: "MetaMask",
+      unknownBeforeAdd: true,
+    });
+    const provider = await resolveSelectedWalletProviderForWrite(
+      walletInput(wallet.provider, account),
+    );
+    expect(provider).toBe(wallet.provider);
+    expect(wallet.switchCalls).toBe(1);
+    expect(wallet.addCalls).toBe(1);
+  });
+
+  test("maps rejected network switch and MetaMask parser errors to useful messages", () => {
+    expect(walletErrorMessage({ code: 4001, message: "User rejected the request" })).toBe(
+      "Wallet request rejected.",
+    );
+    expect(
+      walletErrorMessage(
+        new Error("json: cannot unmarshal string into Go struct field Request.id of type int"),
+      ),
+    ).toContain("could not submit the transaction");
+  });
+
+  test("keeps payable prediction values as bigint", () => {
+    const call = mercoraCalls.placeBet(4n, "UP", genToWei("1.25"));
+    expect(typeof call.value).toBe("bigint");
+    expect(call.value).toBe(1_250_000_000_000_000_000n);
   });
 });
 

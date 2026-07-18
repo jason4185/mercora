@@ -11,15 +11,14 @@ import { StatusBadge } from "@/components/mercora/status-badge";
 import { Button } from "@/components/ui/button";
 import { InjectedConnectButton } from "@/components/mercora/wallet-button";
 import { useWallet } from "@/lib/wallet-context";
-import { getInjectedProvider } from "@/config/mercora";
-import { mercoraContract, mercoraWrites, SubmittedTransactionError } from "@/lib/mercora-contract";
-import { weiToGen } from "@/lib/contract-parsers";
 import {
-  useClaimableAmount,
-  mercoraKeys,
-  useRefundableAmount,
-  useUserPortfolio,
-} from "@/hooks/contract/use-mercora";
+  mercoraContract,
+  mercoraWrites,
+  SubmittedTransactionError,
+  walletErrorMessage,
+} from "@/lib/mercora-contract";
+import { weiToGen } from "@/lib/contract-parsers";
+import { mercoraKeys, useUserPortfolio } from "@/hooks/contract/use-mercora";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { canClaimRefund, canClaimWinnings, userMarketResult } from "@/lib/contract-ui";
@@ -244,11 +243,6 @@ function PositionAction({
 }) {
   const queryClient = useQueryClient();
   const wallet = useWallet();
-  const fastUserAmountPolling = ["PENDING", "WON", "REFUND_AVAILABLE"].includes(
-    userStatus.user_result,
-  );
-  const claimable = useClaimableAmount(marketId, address, { fast: fastUserAmountPolling });
-  const refundable = useRefundableAmount(marketId, address, { fast: fastUserAmountPolling });
   const [pending, setPending] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [confirmedKind, setConfirmedKind] = useState<"winnings" | "refund" | null>(null);
@@ -283,15 +277,12 @@ function PositionAction({
 
   async function claim(kind: "winnings" | "refund") {
     if (!wallet.isCorrectNetwork) return toast.error("Switch to GenLayer Bradbury to continue.");
-    const provider = getInjectedProvider();
-    if (!provider) return toast.error("Connect a browser wallet to continue.");
     if (pending) return;
     try {
-      const refreshed =
-        kind === "winnings" ? await claimable.refetch() : await refundable.refetch();
-      if (refreshed.error || refreshed.data === undefined)
-        throw refreshed.error ?? new Error("Claim availability is unavailable.");
-      const amount = refreshed.data;
+      const amount =
+        kind === "winnings"
+          ? await mercoraContract.getClaimableAmount(BigInt(marketId), address)
+          : await mercoraContract.getRefundableAmount(BigInt(marketId), address);
       if (amount <= 0n)
         return toast.error(
           kind === "winnings"
@@ -301,7 +292,10 @@ function PositionAction({
       setPending(true);
       setReconciled(false);
       const action = kind === "winnings" ? mercoraWrites.claimWinnings : mercoraWrites.claimRefund;
-      const result = await action(address, provider, BigInt(marketId));
+      const result = await action(
+        { address, connector: wallet.connector, chainId: wallet.chainId },
+        BigInt(marketId),
+      );
       setTransactionHash(result.hash);
       setConfirmedKind(kind);
       await reconcileClaim(kind);
@@ -311,7 +305,7 @@ function PositionAction({
       toast.error(
         error instanceof SubmittedTransactionError
           ? `Your transaction was submitted and is still processing. ${error.hash}`
-          : "Transaction failed.",
+          : walletErrorMessage(error),
       );
       if (!(error instanceof SubmittedTransactionError)) setPending(false);
     }
@@ -340,31 +334,7 @@ function PositionAction({
     );
   const winningsEligible = canClaimWinnings(userStatus);
   const refundEligible = canClaimRefund(userStatus);
-  if (!reconciled && winningsEligible && claimable.isLoading)
-    return (
-      <Button size="sm" variant="secondary" disabled>
-        Checking winnings
-      </Button>
-    );
-  if (!reconciled && refundEligible && refundable.isLoading)
-    return (
-      <Button size="sm" variant="secondary" disabled>
-        Checking refund
-      </Button>
-    );
-  if (!reconciled && winningsEligible && claimable.isError)
-    return (
-      <Button size="sm" variant="secondary" onClick={() => claimable.refetch()}>
-        Retry Claim Check
-      </Button>
-    );
-  if (!reconciled && refundEligible && refundable.isError)
-    return (
-      <Button size="sm" variant="secondary" onClick={() => refundable.refetch()}>
-        Retry Refund Check
-      </Button>
-    );
-  if (!reconciled && winningsEligible && (claimable.data ?? 0n) > 0n)
+  if (!reconciled && winningsEligible && BigInt(userStatus.claimable_amount) > 0n)
     return (
       <Button
         size="sm"
@@ -375,7 +345,7 @@ function PositionAction({
         {pending ? "Claim Processing" : "Claim Winnings"}
       </Button>
     );
-  if (!reconciled && refundEligible && (refundable.data ?? 0n) > 0n)
+  if (!reconciled && refundEligible && BigInt(userStatus.refundable_amount) > 0n)
     return (
       <Button size="sm" variant="secondary" disabled={pending} onClick={() => claim("refund")}>
         {pending ? "Claim Processing" : "Claim Refund"}

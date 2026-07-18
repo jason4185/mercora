@@ -1,6 +1,7 @@
-import type { CalldataEncodable, GenLayerTransaction, TransactionHash } from "genlayer-js/types";
-import type { Address, EIP1193Provider } from "viem";
-import { createWriteClient, MERCORA_CONTRACT_ADDRESS, readClient } from "@/config/mercora";
+import type { CalldataEncodable } from "genlayer-js/types";
+import type { Address } from "viem";
+import type { Connector } from "wagmi";
+import { MERCORA_CONTRACT_ADDRESS, readClient } from "@/config/mercora";
 import {
   parseConfiguration,
   parseCreationValidation,
@@ -13,6 +14,15 @@ import {
   parseUserPosition,
   parseUserMarketStatus,
 } from "./contract-parsers";
+import {
+  SubmittedTransactionError,
+  walletErrorMessage,
+  writeWithSelectedWallet,
+  type WalletWriteCallbacks,
+  type WalletWriteState,
+} from "./wallet-write";
+
+export { SubmittedTransactionError, walletErrorMessage };
 
 type ReadMethod =
   | "get_market"
@@ -51,13 +61,28 @@ export const marketPageReadMethod: Record<MarketPageKind, ReadMethod> = {
   completed: "get_completed_market_ids",
 };
 
+const inFlightReads = new Map<string, Promise<unknown>>();
+
+function readKey(args: CalldataEncodable[]) {
+  return JSON.stringify(args, (_, value) => (typeof value === "bigint" ? value.toString() : value));
+}
+
 async function read(functionName: ReadMethod, args: CalldataEncodable[] = []) {
-  return readClient.readContract({
+  const key = `${functionName}:${readKey(args)}`;
+  const existing = inFlightReads.get(key);
+  if (existing) return existing;
+  const request = readClient.readContract({
     address: MERCORA_CONTRACT_ADDRESS,
     functionName,
     args,
     jsonSafeReturn: true,
   });
+  inFlightReads.set(key, request);
+  try {
+    return await request;
+  } finally {
+    inFlightReads.delete(key);
+  }
 }
 
 export const mercoraContract = {
@@ -107,61 +132,14 @@ export const mercoraContract = {
     Boolean(await read("is_market_ready_for_settlement", [marketId])),
 };
 
-export type WriteState = { hash: TransactionHash; receipt: GenLayerTransaction };
-export type WriteCallbacks = {
-  onSubmitted?: (hash: TransactionHash) => void;
+export type WriteCallbacks = WalletWriteCallbacks;
+export type WriteState = WalletWriteState;
+
+type WalletWriteContext = {
+  address: Address;
+  connector?: Connector;
+  chainId?: number;
 };
-
-export class SubmittedTransactionError extends Error {
-  constructor(public readonly hash: TransactionHash) {
-    super("Your transaction was submitted and is still processing.");
-  }
-}
-
-function transactionHash(value: unknown): TransactionHash {
-  if (typeof value === "string" && value.startsWith("0x")) return value as TransactionHash;
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const hash = obj.hash ?? obj.txId ?? obj.transaction_hash;
-    if (typeof hash === "string" && hash.startsWith("0x")) return hash as TransactionHash;
-  }
-  throw new Error("The network did not return a transaction hash.");
-}
-
-async function write(
-  address: Address,
-  provider: EIP1193Provider,
-  functionName: WriteMethod,
-  args: CalldataEncodable[],
-  value = 0n,
-  callbacks?: WriteCallbacks,
-): Promise<WriteState> {
-  const client = createWriteClient(address, provider);
-  const submitted = await client.writeContract({
-    address: MERCORA_CONTRACT_ADDRESS,
-    functionName,
-    args,
-    value,
-  });
-  const hash = transactionHash(submitted);
-  callbacks?.onSubmitted?.(hash);
-  let receipt: GenLayerTransaction;
-  try {
-    receipt = await client.waitForTransactionReceipt({
-      hash,
-      retries: 90,
-      interval: 4_000,
-    });
-  } catch (error) {
-    console.error("GenLayer confirmation wait did not finish", error);
-    throw new SubmittedTransactionError(hash);
-  }
-  if (receipt.txExecutionResultName === "FINISHED_WITH_ERROR" || receipt.resultName === "FAILURE") {
-    console.error("GenLayer transaction failed", receipt);
-    throw new Error("The network rejected this transaction.");
-  }
-  return { hash, receipt };
-}
 
 export const mercoraCalls = {
   createMarket: (asset: string, candleStart: bigint) =>
@@ -178,51 +156,69 @@ export const mercoraCalls = {
 
 export const mercoraWrites = {
   placeBet: (
-    address: Address,
-    provider: EIP1193Provider,
+    wallet: WalletWriteContext,
     marketId: bigint,
     position: "UP" | "DOWN",
     value: bigint,
     callbacks?: WriteCallbacks,
   ) => {
     const call = mercoraCalls.placeBet(marketId, position, value);
-    return write(address, provider, call.functionName, [...call.args], call.value, callbacks);
+    return writeWithSelectedWallet({
+      ...wallet,
+      operation: "placeBet",
+      functionName: call.functionName,
+      args: [...call.args],
+      value: call.value,
+      callbacks,
+    });
   },
   createMarket: (
-    address: Address,
-    provider: EIP1193Provider,
+    wallet: WalletWriteContext,
     asset: string,
     candleStart: bigint,
     callbacks?: WriteCallbacks,
   ) => {
     const call = mercoraCalls.createMarket(asset, candleStart);
-    return write(address, provider, call.functionName, [...call.args], call.value, callbacks);
+    return writeWithSelectedWallet({
+      ...wallet,
+      operation: "createMarket",
+      functionName: call.functionName,
+      args: [...call.args],
+      value: call.value,
+      callbacks,
+    });
   },
-  claimWinnings: (
-    address: Address,
-    provider: EIP1193Provider,
-    marketId: bigint,
-    callbacks?: WriteCallbacks,
-  ) => {
+  claimWinnings: (wallet: WalletWriteContext, marketId: bigint, callbacks?: WriteCallbacks) => {
     const call = mercoraCalls.claimWinnings(marketId);
-    return write(address, provider, call.functionName, [...call.args], call.value, callbacks);
+    return writeWithSelectedWallet({
+      ...wallet,
+      operation: "claimWinnings",
+      functionName: call.functionName,
+      args: [...call.args],
+      value: call.value,
+      callbacks,
+    });
   },
-  claimRefund: (
-    address: Address,
-    provider: EIP1193Provider,
-    marketId: bigint,
-    callbacks?: WriteCallbacks,
-  ) => {
+  claimRefund: (wallet: WalletWriteContext, marketId: bigint, callbacks?: WriteCallbacks) => {
     const call = mercoraCalls.claimRefund(marketId);
-    return write(address, provider, call.functionName, [...call.args], call.value, callbacks);
+    return writeWithSelectedWallet({
+      ...wallet,
+      operation: "claimRefund",
+      functionName: call.functionName,
+      args: [...call.args],
+      value: call.value,
+      callbacks,
+    });
   },
-  settleMarket: (
-    address: Address,
-    provider: EIP1193Provider,
-    marketId: bigint,
-    callbacks?: WriteCallbacks,
-  ) => {
+  settleMarket: (wallet: WalletWriteContext, marketId: bigint, callbacks?: WriteCallbacks) => {
     const call = mercoraCalls.settleMarket(marketId);
-    return write(address, provider, call.functionName, [...call.args], call.value, callbacks);
+    return writeWithSelectedWallet({
+      ...wallet,
+      operation: "settleMarket",
+      functionName: call.functionName,
+      args: [...call.args],
+      value: call.value,
+      callbacks,
+    });
   },
 };

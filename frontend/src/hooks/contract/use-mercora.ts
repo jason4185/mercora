@@ -9,8 +9,10 @@ import {
   marketListRefetchInterval,
   marketRefetchInterval,
   portfolioRefetchInterval,
+  rateLimitAwareInterval,
   userStatusRefetchInterval,
 } from "@/lib/contract-refresh-policy";
+import { isPermanentContractReadError } from "@/lib/contract-read-policy";
 import type { MarketStatus } from "@/lib/contract-parsers";
 
 const root = ["mercora", MERCORA_NETWORK_KEY, MERCORA_CONTRACT_ADDRESS] as const;
@@ -40,7 +42,7 @@ export function useMarketConfiguration() {
     queryKey: mercoraKeys.config,
     queryFn: mercoraContract.getMarketConfiguration,
     staleTime: 60_000,
-    refetchInterval: contractPolling.protocolConfig,
+    refetchInterval: rateLimitAwareInterval(contractPolling.protocolConfig),
     refetchOnMount: "always",
   });
 }
@@ -50,7 +52,7 @@ export function useProtocolStats() {
     queryKey: mercoraKeys.stats,
     queryFn: mercoraContract.getProtocolStats,
     staleTime: 60_000,
-    refetchInterval: contractPolling.protocolStats,
+    refetchInterval: rateLimitAwareInterval(contractPolling.protocolStats),
     refetchOnMount: "always",
   });
 }
@@ -77,7 +79,7 @@ export function useMarketPages(kind: MarketPageKind, pageSize = 12) {
       return { ...page, markets };
     },
     getNextPageParam: (last) => (last.has_more ? last.next_cursor : undefined),
-    refetchInterval: marketListRefetchInterval(kind),
+    refetchInterval: rateLimitAwareInterval(marketListRefetchInterval(kind)),
     refetchIntervalInBackground: kind !== "completed",
     refetchOnMount: "always",
   });
@@ -89,14 +91,19 @@ export function useMarket(marketId: string) {
     queryFn: async () => {
       if (!/^\d+$/.test(marketId)) return null;
       const id = BigInt(marketId);
-      if (!(await mercoraContract.marketExists(id))) return null;
-      const [market, probabilities] = await Promise.all([
-        mercoraContract.getMarket(id),
-        mercoraContract.getMarketProbabilities(id),
-      ]);
-      return toMarketView(market, probabilities);
+      try {
+        const [market, probabilities] = await Promise.all([
+          mercoraContract.getMarket(id),
+          mercoraContract.getMarketProbabilities(id),
+        ]);
+        return toMarketView(market, probabilities);
+      } catch (error) {
+        if (isPermanentContractReadError(error)) return null;
+        throw error;
+      }
     },
-    refetchInterval: (query) => marketRefetchInterval(query.state.data?.status),
+    refetchInterval: (query) =>
+      rateLimitAwareInterval(marketRefetchInterval(query.state.data?.status)),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
   });
@@ -111,7 +118,7 @@ export function useUserMarketStatus(
     queryKey: mercoraKeys.userStatus(marketId, address ?? ""),
     queryFn: () => mercoraContract.getUserMarketStatus(BigInt(marketId), address!),
     enabled: Boolean((options.enabled ?? true) && address && /^\d+$/.test(marketId)),
-    refetchInterval: (query) => userStatusRefetchInterval(query.state.data),
+    refetchInterval: (query) => rateLimitAwareInterval(userStatusRefetchInterval(query.state.data)),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
   });
@@ -127,11 +134,13 @@ export function useClaimableAmount(
     queryFn: () => mercoraContract.getClaimableAmount(BigInt(marketId), address!),
     enabled: Boolean(address && /^\d+$/.test(marketId)),
     refetchInterval: (query) =>
-      amountRefetchInterval({
-        amount: query.state.data,
-        fast: options.fast ?? false,
-        marketStatus: options.marketStatus,
-      }),
+      rateLimitAwareInterval(
+        amountRefetchInterval({
+          amount: query.state.data,
+          fast: options.fast ?? false,
+          marketStatus: options.marketStatus,
+        }),
+      ),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
   });
@@ -147,11 +156,13 @@ export function useRefundableAmount(
     queryFn: () => mercoraContract.getRefundableAmount(BigInt(marketId), address!),
     enabled: Boolean(address && /^\d+$/.test(marketId)),
     refetchInterval: (query) =>
-      amountRefetchInterval({
-        amount: query.state.data,
-        fast: options.fast ?? false,
-        marketStatus: options.marketStatus,
-      }),
+      rateLimitAwareInterval(
+        amountRefetchInterval({
+          amount: query.state.data,
+          fast: options.fast ?? false,
+          marketStatus: options.marketStatus,
+        }),
+      ),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
   });
@@ -184,7 +195,7 @@ export function useUserPortfolio(address?: string) {
     queryKey: mercoraKeys.user(address ?? ""),
     queryFn: () => loadUserPortfolio(address!),
     enabled: Boolean(address),
-    refetchInterval: (query) => portfolioRefetchInterval(query.state.data),
+    refetchInterval: (query) => rateLimitAwareInterval(portfolioRefetchInterval(query.state.data)),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
   });

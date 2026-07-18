@@ -31,6 +31,7 @@ export function useWallet() {
 
   return {
     address: account.address,
+    connector: account.connector,
     isConnected: account.isConnected,
     isConnecting: account.isConnecting,
     chainId,

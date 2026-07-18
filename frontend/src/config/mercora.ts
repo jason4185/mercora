@@ -28,8 +28,3 @@ export function createWriteClient(address: Address, provider: EIP1193Provider) {
     provider,
   });
 }
-
-export function getInjectedProvider(): EIP1193Provider | null {
-  if (typeof window === "undefined") return null;
-  return (window.ethereum as EIP1193Provider | undefined) ?? null;
-}

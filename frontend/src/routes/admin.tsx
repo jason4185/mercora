@@ -17,9 +17,13 @@ import { AssetIcon } from "@/components/mercora/asset-icon";
 import { EmptyState } from "@/components/mercora/empty-state";
 import { InjectedConnectButton } from "@/components/mercora/wallet-button";
 import { useWallet } from "@/lib/wallet-context";
-import { mercoraContract, mercoraWrites, SubmittedTransactionError } from "@/lib/mercora-contract";
+import {
+  mercoraContract,
+  mercoraWrites,
+  SubmittedTransactionError,
+  walletErrorMessage,
+} from "@/lib/mercora-contract";
 import { mercoraKeys, useMarketConfiguration } from "@/hooks/contract/use-mercora";
-import { getInjectedProvider } from "@/config/mercora";
 import type { Asset } from "@/lib/contract-parsers";
 import { cn } from "@/lib/utils";
 import {
@@ -201,12 +205,9 @@ function AdminPage() {
         await wallet.switchToBradbury();
         return;
       }
-      const provider = getInjectedProvider();
-      if (!provider) throw new Error("Connect a browser wallet to continue.");
       setTransactionState("awaiting");
       const result = await mercoraWrites.createMarket(
-        wallet.address,
-        provider,
+        { address: wallet.address, connector: wallet.connector, chainId: wallet.chainId },
         asset,
         candleStart,
         {
@@ -238,9 +239,7 @@ function AdminPage() {
         setError("Your transaction was submitted and is still processing.");
         setTransactionState("processing");
       } else {
-        setError(
-          caught instanceof Error ? caught.message : "The market could not be created. Try again.",
-        );
+        setError(walletErrorMessage(caught));
         setTransactionState("error");
       }
     }

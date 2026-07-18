@@ -5,13 +5,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { MarketView } from "@/lib/market-view";
 import { totalPool } from "@/lib/market-view";
 import { genToWei, weiToGen } from "@/lib/contract-parsers";
-import { mercoraContract, mercoraWrites, SubmittedTransactionError } from "@/lib/mercora-contract";
-import { getInjectedProvider } from "@/config/mercora";
 import {
-  useClaimableAmount,
+  mercoraContract,
+  mercoraWrites,
+  SubmittedTransactionError,
+  walletErrorMessage,
+} from "@/lib/mercora-contract";
+import {
   mercoraKeys,
   useMarketConfiguration,
-  useRefundableAmount,
   useUserMarketStatus,
 } from "@/hooks/contract/use-mercora";
 import { Button } from "@/components/ui/button";
@@ -20,7 +22,6 @@ import { useWallet } from "@/lib/wallet-context";
 import { cn } from "@/lib/utils";
 import { Countdown } from "./countdown";
 import { toast } from "sonner";
-import type { Address } from "viem";
 import { canClaimRefund, canClaimWinnings, userMarketResult } from "@/lib/contract-ui";
 import { InjectedConnectButton } from "./wallet-button";
 import {
@@ -61,16 +62,6 @@ export function BettingPanel({
   const wallet = useWallet();
   const queryClient = useQueryClient();
   const userQuery = useUserMarketStatus(m.id, wallet.address);
-  const fastUserAmountPolling =
-    !userQuery.data || ["PENDING", "WON", "REFUND_AVAILABLE"].includes(userQuery.data.user_result);
-  const claimableQuery = useClaimableAmount(m.id, wallet.address, {
-    fast: fastUserAmountPolling,
-    marketStatus: m.status,
-  });
-  const refundableQuery = useRefundableAmount(m.id, wallet.address, {
-    fast: fastUserAmountPolling,
-    marketStatus: m.status,
-  });
   const configuration = useMarketConfiguration();
   const [side, setSide] = useState<"UP" | "DOWN">(initialSide);
   const [stake, setStake] = useState("1");
@@ -182,13 +173,10 @@ export function BettingPanel({
     if (amountError) return toast.error(amountError);
     if (oppositeSelected)
       return toast.error("You already selected the other direction for this market.");
-    const provider = getInjectedProvider();
-    if (!provider) return toast.error("Install a browser wallet to continue.");
     setTx("awaiting");
     try {
       const result = await mercoraWrites.placeBet(
-        wallet.address as Address,
-        provider,
+        { address: wallet.address, connector: wallet.connector, chainId: wallet.chainId },
         BigInt(m.id),
         side,
         stakeWei,
@@ -221,7 +209,7 @@ export function BettingPanel({
       toast.error(
         error instanceof SubmittedTransactionError
           ? "Your transaction was submitted and is still processing."
-          : "Transaction failed.",
+          : walletErrorMessage(error),
       );
     }
   }
@@ -229,15 +217,12 @@ export function BettingPanel({
   async function claim(kind: "winnings" | "refund") {
     if (!wallet.address || !wallet.isCorrectNetwork)
       return toast.error("Connect on GenLayer Bradbury to continue.");
-    const provider = getInjectedProvider();
-    if (!provider) return toast.error("Install a browser wallet to continue.");
     let amount: bigint;
     try {
-      const refreshed =
-        kind === "winnings" ? await claimableQuery.refetch() : await refundableQuery.refetch();
-      if (refreshed.error || refreshed.data === undefined)
-        throw refreshed.error ?? new Error("Claim availability is unavailable.");
-      amount = refreshed.data;
+      amount =
+        kind === "winnings"
+          ? await mercoraContract.getClaimableAmount(BigInt(m.id), wallet.address)
+          : await mercoraContract.getRefundableAmount(BigInt(m.id), wallet.address);
     } catch (error) {
       console.error("Claim availability check failed", error);
       return toast.error(
@@ -255,16 +240,20 @@ export function BettingPanel({
     setTx("awaiting");
     try {
       const action = kind === "winnings" ? mercoraWrites.claimWinnings : mercoraWrites.claimRefund;
-      const result = await action(wallet.address as Address, provider, BigInt(m.id), {
-        onSubmitted: (submittedHash) => {
-          setHash(submittedHash);
-          setTx("submitted");
-          window.setTimeout(
-            () => setTx((current) => (current === "submitted" ? "confirming" : current)),
-            1_500,
-          );
+      const result = await action(
+        { address: wallet.address, connector: wallet.connector, chainId: wallet.chainId },
+        BigInt(m.id),
+        {
+          onSubmitted: (submittedHash) => {
+            setHash(submittedHash);
+            setTx("submitted");
+            window.setTimeout(
+              () => setTx((current) => (current === "submitted" ? "confirming" : current)),
+              1_500,
+            );
+          },
         },
-      });
+      );
       setHash(result.hash);
       await reconcileWrite({ kind });
     } catch (error) {
@@ -275,7 +264,7 @@ export function BettingPanel({
         toast.error("Your transaction was submitted and is still processing.");
       } else {
         setTx("failed");
-        toast.error("Transaction failed.");
+        toast.error(walletErrorMessage(error));
       }
     }
   }
@@ -283,14 +272,16 @@ export function BettingPanel({
   const personalResult = userMarketResult({
     status: userQuery.data,
     market: { status: m.status, outcome: m.outcome },
-    claimableAmount: claimableQuery.data,
-    refundableAmount: refundableQuery.data,
+    claimableAmount: userQuery.data ? BigInt(userQuery.data.claimable_amount) : undefined,
+    refundableAmount: userQuery.data ? BigInt(userQuery.data.refundable_amount) : undefined,
   });
   const userResult = userQuery.data?.user_result;
   const winningsEligible = canClaimWinnings(userQuery.data);
   const refundEligible = canClaimRefund(userQuery.data);
-  const winningsAvailable = winningsEligible && (claimableQuery.data ?? 0n) > 0n;
-  const refundAvailable = refundEligible && (refundableQuery.data ?? 0n) > 0n;
+  const claimableAmount = userQuery.data ? BigInt(userQuery.data.claimable_amount) : 0n;
+  const refundableAmount = userQuery.data ? BigInt(userQuery.data.refundable_amount) : 0n;
+  const winningsAvailable = winningsEligible && claimableAmount > 0n;
+  const refundAvailable = refundEligible && refundableAmount > 0n;
   const transactionPending = [
     "awaiting",
     "submitted",
@@ -314,17 +305,13 @@ export function BettingPanel({
             </p>
           </div>
         </div>
-        {(userQuery.isRefetchError && userQuery.data) ||
-        (claimableQuery.isRefetchError && claimableQuery.data !== undefined) ||
-        (refundableQuery.isRefetchError && refundableQuery.data !== undefined) ? (
+        {userQuery.isRefetchError && userQuery.data ? (
           <div className="mt-3">
             <ContractRefreshWarning
               onRetry={() => {
                 void refresh();
               }}
-              retrying={
-                userQuery.isFetching || claimableQuery.isFetching || refundableQuery.isFetching
-              }
+              retrying={userQuery.isFetching}
             />
           </div>
         ) : null}
@@ -352,20 +339,13 @@ export function BettingPanel({
         <span className="text-mono text-[11px] text-muted-foreground">Pool {totalPool(m)} GEN</span>
       </div>
       {(userQuery.isRefetchError && userQuery.data) ||
-      (claimableQuery.isRefetchError && claimableQuery.data !== undefined) ||
-      (refundableQuery.isRefetchError && refundableQuery.data !== undefined) ||
       (configuration.isRefetchError && configuration.data) ? (
         <div className="mt-3">
           <ContractRefreshWarning
             onRetry={() => {
               void refresh();
             }}
-            retrying={
-              userQuery.isFetching ||
-              claimableQuery.isFetching ||
-              refundableQuery.isFetching ||
-              configuration.isFetching
-            }
+            retrying={userQuery.isFetching || configuration.isFetching}
           />
         </div>
       ) : null}
@@ -450,20 +430,20 @@ export function BettingPanel({
       <div className="mt-4">
         {!wallet.isConnected ? (
           <InjectedConnectButton className="w-full" />
-        ) : winningsEligible && claimableQuery.isLoading ? (
+        ) : winningsEligible && userQuery.isLoading ? (
           <Button className="w-full" variant="secondary" disabled>
             <Loader2 className="h-4 w-4 animate-spin" /> Checking winnings
           </Button>
-        ) : refundEligible && refundableQuery.isLoading ? (
+        ) : refundEligible && userQuery.isLoading ? (
           <Button className="w-full" variant="secondary" disabled>
             <Loader2 className="h-4 w-4 animate-spin" /> Checking refund
           </Button>
-        ) : winningsEligible && claimableQuery.isError ? (
-          <Button className="w-full" variant="secondary" onClick={() => claimableQuery.refetch()}>
+        ) : winningsEligible && userQuery.isError ? (
+          <Button className="w-full" variant="secondary" onClick={() => userQuery.refetch()}>
             Retry Winnings Check
           </Button>
-        ) : refundEligible && refundableQuery.isError ? (
-          <Button className="w-full" variant="secondary" onClick={() => refundableQuery.refetch()}>
+        ) : refundEligible && userQuery.isError ? (
+          <Button className="w-full" variant="secondary" onClick={() => userQuery.refetch()}>
             Retry Refund Check
           </Button>
         ) : winningsAvailable ? (
