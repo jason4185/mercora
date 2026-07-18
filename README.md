@@ -60,29 +60,31 @@ The frontend does not choose the outcome. The Worker does not submit prices. The
 
 ## UI Tour
 
+Mercora's interface keeps market discovery, predictions, portfolio tracking, and settlement information connected to the same contract-backed workflow.
+
 ### 1. Browse Markets
 
-Users can view active, upcoming, and completed one-hour markets with timing, status, pool totals, and directional percentages. Public markets load without requiring a wallet connection.
+Users can browse available one-hour markets for BTC, ETH, BNB, and SOL, review each market's exact UTC window, and see its current status and pool composition. Market cards load contract-backed data progressively so available markets can appear without waiting for every secondary read.
 
-<!-- Screenshot required: Markets page -->
+![Mercora markets page showing available one-hour crypto markets](docs/images/mercora-markets.png)
 
 ### 2. Make a Prediction
 
-The market detail page shows the exact UTC candle window, UP and DOWN pools, user stake limits, market status, and the contract-backed prediction action. Users choose a direction and submit a signed GEN stake transaction from their connected wallet.
+Each market page identifies the asset, candle start and end times, betting deadline, current UP and DOWN pools, and the user's allowed stake. A connected user chooses one direction and submits a signed contract transaction before betting closes.
 
-<!-- Screenshot required: Market detail and prediction page -->
+![Mercora market detail page with UP and DOWN prediction controls](docs/images/mercora-prediction.png)
 
 ### 3. Track Positions and Claims
 
-Portfolio shows markets a connected user participated in, including their position, result, claimable winnings, or refundable stake. Claim and refund actions are shown from contract-backed user state.
+Portfolio brings together the connected user's active and completed positions. It shows the chosen direction, stake, pool share, final market status, payout or refund availability, and whether a completed claim has already been processed.
 
-<!-- Screenshot required: Portfolio page -->
+![Mercora portfolio showing active, lost, and claimed market positions](docs/images/mercora-portfolio.png)
 
 ### 4. Understand Settlement
 
-The Documentation and How It Works pages explain the five-source model, three-vote requirement, Worker role, contract permissions, claims, and refunds. These pages give users the settlement model without turning the app into an API reference.
+The product documentation explains how the Settlement Worker triggers due markets without choosing their results. GenLayer checks completed candles from Binance, Bybit, Gate.io, MEXC, and Bitget, and the contract requires at least three matching directions before recording UP or DOWN.
 
-<!-- Screenshot required: Documentation or How It Works page -->
+![Mercora documentation explaining the settlement and verification process](docs/images/mercora-settlement.png)
 
 ## Market Rules
 
