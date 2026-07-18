@@ -43,7 +43,11 @@ const TABS: { key: Tab; label: string }[] = [
 
 function PortfolioPage() {
   const wallet = useWallet();
-  const query = useUserPortfolio(wallet.address);
+  const query = useUserPortfolio(wallet.address, {
+    source: "PortfolioPage/useUserPortfolio",
+    blocksRendering: true,
+    userSpecific: true,
+  });
   const [tab, setTab] = useState<Tab>("ALL");
 
   if (!wallet.isConnected) {

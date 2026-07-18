@@ -61,8 +61,15 @@ export function BettingPanel({
 }) {
   const wallet = useWallet();
   const queryClient = useQueryClient();
-  const userQuery = useUserMarketStatus(m.id, wallet.address);
-  const configuration = useMarketConfiguration();
+  const userQuery = useUserMarketStatus(m.id, wallet.address, {
+    source: "BettingPanel/useUserMarketStatus",
+    blocksRendering: false,
+    userSpecific: true,
+  });
+  const configuration = useMarketConfiguration({
+    source: "BettingPanel/useMarketConfiguration",
+    blocksRendering: false,
+  });
   const [side, setSide] = useState<"UP" | "DOWN">(initialSide);
   const [stake, setStake] = useState("1");
   const [tx, setTx] = useState<TxState>("idle");

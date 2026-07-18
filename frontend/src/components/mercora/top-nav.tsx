@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MercoraLogo } from "./logo";
 import { WalletButton } from "./wallet-button";
 import { NotificationsBell } from "./notifications";
@@ -16,7 +16,15 @@ const NAV = [
 
 export function TopNav() {
   const [open, setOpen] = useState(false);
-  const { isAdmin, authorizationLoading } = useWallet();
+  const [authorizationEnabled, setAuthorizationEnabled] = useState(false);
+  const { isAdmin, authorizationLoading } = useWallet({
+    authorization: authorizationEnabled,
+    balance: false,
+  });
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setAuthorizationEnabled(true), 8_000);
+    return () => window.clearTimeout(timeout);
+  }, []);
   const links = isAdmin && !authorizationLoading ? [...NAV, { to: "/admin", label: "Admin" }] : NAV;
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-background/88 shadow-[0_1px_0_rgba(255,255,255,0.02)] backdrop-blur-xl">

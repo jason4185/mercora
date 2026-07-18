@@ -92,7 +92,7 @@ export function poolDisplay(
 
 export function toMarketView(
   market: ContractMarket,
-  probabilities: MarketProbabilities,
+  probabilities?: MarketProbabilities,
 ): MarketView {
   const pool = poolDisplay(market.total_up_pool, market.total_down_pool, probabilities);
   return {

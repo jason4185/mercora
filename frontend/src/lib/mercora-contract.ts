@@ -21,6 +21,7 @@ import {
   type WalletWriteCallbacks,
   type WalletWriteState,
 } from "./wallet-write";
+import { traceContractRead, traceNow, type ContractReadTraceMeta } from "./contract-read-trace";
 
 export { SubmittedTransactionError, walletErrorMessage };
 
@@ -62,24 +63,95 @@ export const marketPageReadMethod: Record<MarketPageKind, ReadMethod> = {
 };
 
 const inFlightReads = new Map<string, Promise<unknown>>();
+const MAX_CONCURRENT_CONTRACT_READS = 4;
+let activeContractReads = 0;
+const contractReadQueue: Array<() => void> = [];
 
 function readKey(args: CalldataEncodable[]) {
   return JSON.stringify(args, (_, value) => (typeof value === "bigint" ? value.toString() : value));
 }
 
-async function read(functionName: ReadMethod, args: CalldataEncodable[] = []) {
+function scheduleContractRead<T>(task: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      activeContractReads += 1;
+      task()
+        .then(resolve, reject)
+        .finally(() => {
+          activeContractReads -= 1;
+          contractReadQueue.shift()?.();
+        });
+    };
+
+    if (activeContractReads < MAX_CONCURRENT_CONTRACT_READS) run();
+    else contractReadQueue.push(run);
+  });
+}
+
+async function read(
+  functionName: ReadMethod,
+  args: CalldataEncodable[] = [],
+  trace?: ContractReadTraceMeta,
+) {
   const key = `${functionName}:${readKey(args)}`;
   const existing = inFlightReads.get(key);
-  if (existing) return existing;
-  const request = readClient.readContract({
-    address: MERCORA_CONTRACT_ADDRESS,
-    functionName,
-    args,
-    jsonSafeReturn: true,
+  if (existing) {
+    const timestamp = new Date().toISOString();
+    traceContractRead({
+      ...trace,
+      method: functionName,
+      duplicateInFlight: true,
+      status: "deduped",
+      startTime: timestamp,
+      completionTime: timestamp,
+      durationMs: 0,
+    });
+    return existing;
+  }
+
+  const startTime = new Date();
+  const start = traceNow();
+  let rpcStart = start;
+  const request = scheduleContractRead(() => {
+    rpcStart = traceNow();
+    return readClient.readContract({
+      address: MERCORA_CONTRACT_ADDRESS,
+      functionName,
+      args,
+      jsonSafeReturn: true,
+    });
   });
   inFlightReads.set(key, request);
   try {
-    return await request;
+    const result = await request;
+    const endTime = new Date();
+    const end = traceNow();
+    traceContractRead({
+      ...trace,
+      method: functionName,
+      duplicateInFlight: false,
+      status: "ok",
+      startTime: startTime.toISOString(),
+      completionTime: endTime.toISOString(),
+      durationMs: Math.round(end - start),
+      queuedMs: Math.max(0, Math.round(rpcStart - start)),
+    });
+    return result;
+  } catch (error) {
+    const endTime = new Date();
+    const end = traceNow();
+    traceContractRead({
+      ...trace,
+      method: functionName,
+      duplicateInFlight: false,
+      status: "error",
+      startTime: startTime.toISOString(),
+      completionTime: endTime.toISOString(),
+      durationMs: Math.round(end - start),
+      queuedMs: Math.max(0, Math.round(rpcStart - start)),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   } finally {
     inFlightReads.delete(key);
   }
@@ -87,49 +159,67 @@ async function read(functionName: ReadMethod, args: CalldataEncodable[] = []) {
 
 export const mercoraContract = {
   getSchema: () => readClient.getContractSchema(MERCORA_CONTRACT_ADDRESS),
-  marketExists: async (marketId: bigint) => Boolean(await read("market_exists", [marketId])),
+  marketExists: async (marketId: bigint, trace?: ContractReadTraceMeta) =>
+    Boolean(await read("market_exists", [marketId], trace)),
   getMarketCount: async () => BigInt((await read("get_market_count")) as string | number | bigint),
-  getMarketDisplayStatus: async (marketId: bigint) =>
-    String(await read("get_market_display_status", [marketId])),
-  getMarket: async (marketId: bigint) => {
+  getMarketDisplayStatus: async (marketId: bigint, trace?: ContractReadTraceMeta) =>
+    String(await read("get_market_display_status", [marketId], trace)),
+  getMarket: async (marketId: bigint, trace?: ContractReadTraceMeta) => {
     const [market, display] = await Promise.all([
-      read("get_market", [marketId]),
-      read("get_market_display_status", [marketId]),
+      read("get_market", [marketId], trace),
+      read("get_market_display_status", [marketId], trace),
     ]);
     return parseMarket(market, String(display));
   },
-  getMarketIds: async (cursor: bigint, limit: bigint) =>
-    parseIdPage(await read("get_market_ids", [cursor, limit])),
-  getActiveMarketIds: async (cursor: bigint, limit: bigint) =>
-    parseIdPage(await read("get_active_market_ids", [cursor, limit])),
-  getDueMarketIds: async (cursor: bigint, limit: bigint) =>
-    parseIdPage(await read("get_due_market_ids", [cursor, limit])),
-  getCompletedMarketIds: async (cursor: bigint, limit: bigint) =>
-    parseIdPage(await read("get_completed_market_ids", [cursor, limit])),
-  getMarketIdsPage: async (kind: MarketPageKind, cursor: bigint, limit: bigint) =>
-    parseIdPage(await read(marketPageReadMethod[kind], [cursor, limit])),
-  getMarketProbabilities: async (marketId: bigint) =>
-    parseProbabilities(await read("get_market_probabilities_bps", [marketId])),
-  getUserMarketStatus: async (marketId: bigint, wallet: string) =>
-    parseUserMarketStatus(await read("get_user_market_status", [marketId, wallet])),
-  getUserPosition: async (marketId: bigint, wallet: string) =>
-    parseUserPosition(await read("get_user_position", [marketId, wallet])),
-  getUserMarketIds: async (wallet: string) =>
-    parseUserMarketIds(await read("get_user_market_ids", [wallet])),
-  getUserMarketIdsPage: async (wallet: string, cursor: bigint, limit: bigint) =>
-    parseIdPage(await read("get_user_market_ids_page", [wallet, cursor, limit])),
-  getClaimableAmount: async (marketId: bigint, wallet: string) =>
-    BigInt((await read("get_claimable_amount", [marketId, wallet])) as string | number | bigint),
-  getRefundableAmount: async (marketId: bigint, wallet: string) =>
-    BigInt((await read("get_refundable_amount", [marketId, wallet])) as string | number | bigint),
-  getMarketConfiguration: async () => parseConfiguration(await read("get_market_configuration")),
-  getProtocolStats: async () => parseProtocolStats(await read("get_protocol_stats")),
-  validateMarketCreation: async (asset: string, candleStart: bigint) =>
-    parseCreationValidation(await read("validate_market_creation", [asset, candleStart])),
-  getMarketIdByKey: async (asset: string, candleStart: bigint) =>
-    parseMarketLookup(await read("get_market_id_by_key", [asset, candleStart])),
-  isMarketReady: async (marketId: bigint) =>
-    Boolean(await read("is_market_ready_for_settlement", [marketId])),
+  getMarketIds: async (cursor: bigint, limit: bigint, trace?: ContractReadTraceMeta) =>
+    parseIdPage(await read("get_market_ids", [cursor, limit], trace)),
+  getActiveMarketIds: async (cursor: bigint, limit: bigint, trace?: ContractReadTraceMeta) =>
+    parseIdPage(await read("get_active_market_ids", [cursor, limit], trace)),
+  getDueMarketIds: async (cursor: bigint, limit: bigint, trace?: ContractReadTraceMeta) =>
+    parseIdPage(await read("get_due_market_ids", [cursor, limit], trace)),
+  getCompletedMarketIds: async (cursor: bigint, limit: bigint, trace?: ContractReadTraceMeta) =>
+    parseIdPage(await read("get_completed_market_ids", [cursor, limit], trace)),
+  getMarketIdsPage: async (
+    kind: MarketPageKind,
+    cursor: bigint,
+    limit: bigint,
+    trace?: ContractReadTraceMeta,
+  ) => parseIdPage(await read(marketPageReadMethod[kind], [cursor, limit], trace)),
+  getMarketProbabilities: async (marketId: bigint, trace?: ContractReadTraceMeta) =>
+    parseProbabilities(await read("get_market_probabilities_bps", [marketId], trace)),
+  getUserMarketStatus: async (marketId: bigint, wallet: string, trace?: ContractReadTraceMeta) =>
+    parseUserMarketStatus(await read("get_user_market_status", [marketId, wallet], trace)),
+  getUserPosition: async (marketId: bigint, wallet: string, trace?: ContractReadTraceMeta) =>
+    parseUserPosition(await read("get_user_position", [marketId, wallet], trace)),
+  getUserMarketIds: async (wallet: string, trace?: ContractReadTraceMeta) =>
+    parseUserMarketIds(await read("get_user_market_ids", [wallet], trace)),
+  getUserMarketIdsPage: async (
+    wallet: string,
+    cursor: bigint,
+    limit: bigint,
+    trace?: ContractReadTraceMeta,
+  ) => parseIdPage(await read("get_user_market_ids_page", [wallet, cursor, limit], trace)),
+  getClaimableAmount: async (marketId: bigint, wallet: string, trace?: ContractReadTraceMeta) =>
+    BigInt(
+      (await read("get_claimable_amount", [marketId, wallet], trace)) as string | number | bigint,
+    ),
+  getRefundableAmount: async (marketId: bigint, wallet: string, trace?: ContractReadTraceMeta) =>
+    BigInt(
+      (await read("get_refundable_amount", [marketId, wallet], trace)) as string | number | bigint,
+    ),
+  getMarketConfiguration: async (trace?: ContractReadTraceMeta) =>
+    parseConfiguration(await read("get_market_configuration", [], trace)),
+  getProtocolStats: async (trace?: ContractReadTraceMeta) =>
+    parseProtocolStats(await read("get_protocol_stats", [], trace)),
+  validateMarketCreation: async (
+    asset: string,
+    candleStart: bigint,
+    trace?: ContractReadTraceMeta,
+  ) => parseCreationValidation(await read("validate_market_creation", [asset, candleStart], trace)),
+  getMarketIdByKey: async (asset: string, candleStart: bigint, trace?: ContractReadTraceMeta) =>
+    parseMarketLookup(await read("get_market_id_by_key", [asset, candleStart], trace)),
+  isMarketReady: async (marketId: bigint, trace?: ContractReadTraceMeta) =>
+    Boolean(await read("is_market_ready_for_settlement", [marketId], trace)),
 };
 
 export type WriteCallbacks = WalletWriteCallbacks;

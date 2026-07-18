@@ -12,11 +12,10 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { AppShell } from "@/components/mercora/app-shell";
-import { MarketCard } from "@/components/mercora/market-card";
+import { MarketCard, MarketCardSkeleton } from "@/components/mercora/market-card";
 import type { Asset, MarketStatus } from "@/lib/contract-parsers";
 import { AssetIcon } from "@/components/mercora/asset-icon";
 import { cn } from "@/lib/utils";
-import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/mercora/page-header";
 import { EmptyState } from "@/components/mercora/empty-state";
 import { useMarketPages } from "@/hooks/contract/use-mercora";
@@ -91,14 +90,21 @@ function MarketsPage() {
     });
     return list;
   }, [tab, asset, q, sort, marketQuery.data?.pages]);
-  const loadedMarketCount =
-    marketQuery.data?.pages.reduce((count, page) => count + page.markets.length, 0) ?? 0;
+  const loadedMarketCount = marketQuery.loadedMarketCount;
+  const marketIdCount = marketQuery.marketIds.length;
+  const pendingMarketCount = Math.max(0, marketIdCount - loadedMarketCount);
+  const hasPendingMarketRecords = pendingMarketCount > 0 && marketQuery.isFetchingMarkets;
+  const recordFailed =
+    marketQuery.hasMarketRecordErrors &&
+    marketIdCount > 0 &&
+    loadedMarketCount === 0 &&
+    !marketQuery.isFetchingMarkets;
   const noFilters = tab === "ALL" && asset === null && q.trim() === "";
   const readState = collectionReadState({
     isLoading: marketQuery.isLoading,
     isError: marketQuery.isError,
     hasData: Boolean(marketQuery.data),
-    itemCount: loadedMarketCount,
+    itemCount: marketIdCount,
   });
 
   return (
@@ -116,7 +122,8 @@ function MarketsPage() {
               description="Predict whether a cryptocurrency will finish higher or lower during a one-hour period."
               badge="5 exchanges · 3 must agree"
             />
-            {marketQuery.isRefetchError && marketQuery.data ? (
+            {(marketQuery.isRefetchError || marketQuery.hasMarketRecordErrors) &&
+            marketQuery.data ? (
               <ContractRefreshWarning
                 message="Markets could not be refreshed. Retrying…"
                 onRetry={() => marketQuery.refetch()}
@@ -195,10 +202,10 @@ function MarketsPage() {
             {readState === "loading" ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {Array.from({ length: 6 }).map((_, i) => (
-                  <Skeleton key={i} className="h-56 rounded-xl" />
+                  <MarketCardSkeleton key={i} />
                 ))}
               </div>
-            ) : readState === "failed" ? (
+            ) : readState === "failed" || recordFailed ? (
               <EmptyState
                 icon={Filter}
                 title="Markets could not be loaded."
@@ -214,7 +221,7 @@ function MarketsPage() {
                 actionLabel="Refresh"
                 onAction={() => marketQuery.refetch()}
               />
-            ) : filtered.length === 0 ? (
+            ) : filtered.length === 0 && !hasPendingMarketRecords ? (
               <EmptyState
                 icon={Filter}
                 title="No markets match your filters"
@@ -232,6 +239,11 @@ function MarketsPage() {
                   {filtered.map((m) => (
                     <MarketCard key={m.id} m={m} />
                   ))}
+                  {hasPendingMarketRecords
+                    ? Array.from({ length: Math.min(pendingMarketCount, 6) }).map((_, i) => (
+                        <MarketCardSkeleton key={`pending-${i}`} />
+                      ))
+                    : null}
                 </div>
                 {marketQuery.hasNextPage && (
                   <div className="flex justify-center pt-2">

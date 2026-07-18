@@ -4,14 +4,15 @@ import { MERCORA_CHAIN_ID } from "@/config/mercora";
 import { useProtocolStats } from "@/hooks/contract/use-mercora";
 import { isAuthorizedAccount } from "./contract-ui";
 
-export function useWallet() {
+export function useWallet(options: { authorization?: boolean; balance?: boolean } = {}) {
   const account = useAccount();
   const chainId = useChainId();
+  const balanceEnabled = options.balance ?? true;
   const balance = useBalance({
     address: account.address,
     chainId: MERCORA_CHAIN_ID,
     query: {
-      enabled: account.isConnected,
+      enabled: account.isConnected && balanceEnabled,
       staleTime: 10_000,
       refetchInterval: 30_000,
       refetchOnWindowFocus: true,
@@ -21,7 +22,12 @@ export function useWallet() {
   });
   const { disconnect } = useDisconnect();
   const switchChain = useSwitchChain();
-  const stats = useProtocolStats();
+  const authorizationEnabled = options.authorization ?? false;
+  const stats = useProtocolStats({
+    enabled: authorizationEnabled && account.isConnected,
+    source: "useWallet/authorization",
+    userSpecific: true,
+  });
   const isAdmin = isAuthorizedAccount(account.address, stats.data);
   const refreshBalance = balance.refetch;
 
@@ -37,16 +43,16 @@ export function useWallet() {
     chainId,
     isCorrectNetwork: chainId === MERCORA_CHAIN_ID,
     balance: balance.data?.formatted,
-    balanceLoading: balance.isLoading,
-    balanceError: balance.isError && !balance.data,
-    balanceRefreshError: balance.isRefetchError,
+    balanceLoading: balanceEnabled && balance.isLoading,
+    balanceError: balanceEnabled && balance.isError && !balance.data,
+    balanceRefreshError: balanceEnabled && balance.isRefetchError,
     refreshBalance,
     disconnect,
     switchToBradbury: () => switchChain.switchChain({ chainId: MERCORA_CHAIN_ID }),
     isAdmin,
-    authorizationLoading: account.isConnected && stats.isLoading,
-    authorizationError: account.isConnected && stats.isError && !stats.data,
-    authorizationRefreshError: account.isConnected && stats.isRefetchError,
+    authorizationLoading: authorizationEnabled && account.isConnected && stats.isLoading,
+    authorizationError: authorizationEnabled && account.isConnected && stats.isError && !stats.data,
+    authorizationRefreshError: authorizationEnabled && account.isConnected && stats.isRefetchError,
     protocolStats: stats.data,
   };
 }

@@ -61,6 +61,15 @@ import {
   type WalletWriteInput,
 } from "./wallet-write";
 import { mercoraKeys } from "@/hooks/contract/use-mercora";
+import {
+  DOC_SECTIONS,
+  HOW_IT_WORKS_STEPS,
+  MARKET_DOCS,
+  PRODUCTION_LINKS,
+  READ_METHODS,
+  SETTLEMENT_PROVIDERS,
+  WRITE_METHODS,
+} from "./product-docs";
 import type { EIP1193Provider } from "viem";
 import type { Connector } from "wagmi";
 
@@ -157,6 +166,10 @@ function connectorForProvider(provider: EIP1193Provider, name = "MetaMask") {
     name,
     getProvider: async () => provider,
   } as Connector;
+}
+
+async function routeSource(fileName: string) {
+  return Bun.file(new URL(`../routes/${fileName}`, import.meta.url)).text();
 }
 
 function walletInput(provider: EIP1193Provider, address: string): WalletWriteInput {
@@ -808,6 +821,140 @@ describe("production contract mapping", () => {
   });
 });
 
+describe("user-facing documentation", () => {
+  test("wires production links and removes stale placeholders", async () => {
+    const docs = await routeSource("docs.tsx");
+    const howItWorks = await routeSource("how-it-works.tsx");
+    const combined = `${docs}\n${howItWorks}`;
+
+    expect(PRODUCTION_LINKS.liveApp).toBe("https://mercora-omega.vercel.app/");
+    expect(PRODUCTION_LINKS.contractAddress).toBe("0x0A3Fcc4671b6fF0BffBCDab3B744CFf6d5c7ED05");
+    expect(PRODUCTION_LINKS.contractSource).toBe(
+      "https://github.com/jason4185/mercora/blob/main/contract/MercoraMarket.py",
+    );
+    expect(PRODUCTION_LINKS.githubRepository).toBe("https://github.com/jason4185/mercora");
+    expect(PRODUCTION_LINKS.settlementWorker).toBe(
+      "https://mercora-settlement-worker.jxson-parametrix.workers.dev/health",
+    );
+    expect(PRODUCTION_LINKS.technicalDocs).toBe("https://github.com/jason4185/mercora#readme");
+    expect(PRODUCTION_LINKS.explorerBaseUrl).toContain("explorer-bradbury.genlayer.com");
+    expect(combined).not.toContain("Not configured");
+  });
+
+  test("documents deployed market assets, timing, limits, and result rules", async () => {
+    const docs = await routeSource("docs.tsx");
+    const howItWorks = await routeSource("how-it-works.tsx");
+
+    expect(MARKET_DOCS.supportedAssets).toEqual(["BTC", "ETH", "BNB", "SOL"]);
+    expect(MARKET_DOCS.quoteAsset).toBe("USDT");
+    expect(MARKET_DOCS.marketPeriod).toBe("One exact UTC hour");
+    expect(MARKET_DOCS.minimumStakeGen).toBe("1");
+    expect(MARKET_DOCS.maximumStakeGen).toBe("10");
+    expect(MARKET_DOCS.requiredVotes).toBe(3);
+    expect(MARKET_DOCS.sourceCount).toBe(5);
+    expect(MARKET_DOCS.settlementSafetyDelaySeconds).toBe(120);
+    expect(MARKET_DOCS.workerGraceSeconds).toBe(180);
+    expect(SETTLEMENT_PROVIDERS).toEqual(["Binance", "Bybit", "Gate.io", "MEXC", "Bitget"]);
+    expect(docs).toContain("Arbitrary custom questions are not supported.");
+    expect(docs).toContain("Close is strictly greater than open.");
+    expect(docs).toContain("Close is equal to or lower than open.");
+    expect(howItWorks).toContain("closes strictly higher than it opened");
+    expect(howItWorks).toContain("closes equal to or lower than it opened");
+  });
+
+  test("states three-of-five settlement without implying unanimity", async () => {
+    const docs = await routeSource("docs.tsx");
+    const howItWorks = await routeSource("how-it-works.tsx");
+    const combined = `${docs}\n${howItWorks}`;
+
+    expect(docs).toContain("five completed candles");
+    expect(docs).toContain("No side reaches 3");
+    expect(HOW_IT_WORKS_STEPS.join("\n")).toContain("three matching directions");
+    expect(combined).not.toMatch(/checks agree|all checks must agree|all 5 exchanges agreed/i);
+  });
+
+  test("documents cancelled, inconclusive, claims, and permissions accurately", async () => {
+    const docs = await routeSource("docs.tsx");
+
+    expect(docs).toContain("empty or only one side has a pool");
+    expect(docs).toContain("does not produce at least three matching UP or DOWN votes");
+    expect(docs).toContain("No clear result (Inconclusive)");
+    expect(docs).toContain("Claims are manual contract transactions.");
+    expect(docs).toContain("Claims cannot be repeated.");
+    expect(docs).toContain("Losing users see");
+    expect(docs).toContain("Owner or configured market operator can create markets.");
+    expect(docs).toContain("Owner or configured market operator can call settlement.");
+    expect(docs).toContain("Only the owner can change the market operator.");
+    expect(docs).toContain(
+      "Neither owner nor operator can submit source prices or choose the outcome.",
+    );
+    expect(docs).toContain("The Worker does not submit prices or choose UP/DOWN.");
+  });
+
+  test("keeps developer methods collapsed and off the How It Works page", async () => {
+    const docs = await routeSource("docs.tsx");
+    const howItWorks = await routeSource("how-it-works.tsx");
+    const methodNames = [...READ_METHODS, ...WRITE_METHODS].map((method) => method.name);
+
+    expect(docs).toContain("<details");
+    expect(docs).toContain("Read Methods");
+    expect(docs).toContain("Write Methods");
+    expect(DOC_SECTIONS.map((section) => section.label)).toContain("Developer Reference");
+    expect(READ_METHODS.map((method) => method.name)).toContain("get_market");
+    expect(WRITE_METHODS.map((method) => method.name)).toContain("claim_refund");
+    methodNames.forEach((method) => {
+      expect(howItWorks).not.toContain(method);
+    });
+  });
+
+  test("uses grouped exchange architecture without provider-specific crossing edges", async () => {
+    const docs = await routeSource("docs.tsx");
+
+    expect(docs).toContain('data-testid="grouped-exchange-sources"');
+    expect(docs).toContain("Five Exchange Sources");
+    SETTLEMENT_PROVIDERS.forEach((provider) => {
+      expect(docs).not.toMatch(new RegExp(`${provider}\\s*(?:->|=>|-->|->>|→)`));
+    });
+  });
+
+  test("keeps documentation navigation stable and active", async () => {
+    const docs = await routeSource("docs.tsx");
+    const ids = DOC_SECTIONS.map((section) => section.id);
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(DOC_SECTIONS.map((section) => section.label)).toEqual([
+      "How Mercora Works",
+      "Supported Markets",
+      "Market Timeline",
+      "Prediction Limits",
+      "Pool Probabilities and Payouts",
+      "How Prices Are Checked",
+      "How GenLayer Confirms Results",
+      "Cancelled and Inconclusive Markets",
+      "Winnings and Refunds",
+      "Market Permissions",
+      "Trust and Safety",
+      "Production Links",
+      "Developer Reference",
+    ]);
+    expect(docs).toContain("document.getElementById(section.id)");
+    expect(docs).toContain('aria-current={active === section.id ? "page" : undefined}');
+    expect(docs).toContain("scroll-mt-28");
+  });
+
+  test("does not run contract reads on documentation load", async () => {
+    const docs = await routeSource("docs.tsx");
+    const howItWorks = await routeSource("how-it-works.tsx");
+    const combined = `${docs}\n${howItWorks}`;
+
+    expect(combined).not.toContain("useMarketConfiguration");
+    expect(combined).not.toContain("useProtocolStats");
+    expect(combined).not.toContain("useMarketPages");
+    expect(combined).not.toContain("mercoraContract");
+    expect(combined).not.toContain("ContractRefreshWarning");
+  });
+});
+
 describe("contract read reliability", () => {
   test("retries a temporary read and succeeds", async () => {
     let attempts = 0;
@@ -1050,8 +1197,7 @@ describe("post-transaction reconciliation", () => {
   });
 
   test("preserves a submitted transaction hash", () => {
-    const hash =
-      "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef" as import("genlayer-js/types").TransactionHash;
+    const hash = `0x${"1234567890abcdef".repeat(4)}` as import("genlayer-js/types").TransactionHash;
     expect(new SubmittedTransactionError(hash).hash).toBe(hash);
   });
 });
@@ -1094,6 +1240,20 @@ describe("market presentation helpers", () => {
       downPercent: 50,
       hasPredictions: true,
     });
+  });
+
+  test("derives market percentages from contract pool totals without a probability read", () => {
+    const view = toMarketView(
+      parseMarket({
+        ...marketFixture,
+        total_up_pool: "3000000000000000000",
+        total_down_pool: "1000000000000000000",
+        total_pool: "4000000000000000000",
+      }),
+    );
+    expect(view.upPercent).toBe(75);
+    expect(view.downPercent).toBe(25);
+    expect(view.hasPredictions).toBe(true);
   });
 
   test("formats singular and plural participant labels", () => {

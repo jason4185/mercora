@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
+import { useEffect, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useUserPortfolio } from "@/hooks/contract/use-mercora";
 import { useWallet } from "@/lib/wallet-context";
@@ -19,12 +20,33 @@ import { cn } from "@/lib/utils";
 import { ContractRefreshWarning } from "./contract-refresh-warning";
 
 export function NotificationsBell() {
-  const wallet = useWallet();
-  const portfolio = useUserPortfolio(wallet.address);
+  const wallet = useWallet({ balance: false });
+  const [open, setOpen] = useState(false);
+  const [portfolioEnabled, setPortfolioEnabled] = useState(false);
+  useEffect(() => {
+    if (!wallet.isConnected) {
+      setPortfolioEnabled(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setPortfolioEnabled(true), 8_000);
+    return () => window.clearTimeout(timeout);
+  }, [wallet.isConnected, wallet.address]);
+  const portfolio = useUserPortfolio(wallet.address, {
+    enabled: wallet.isConnected && portfolioEnabled,
+    source: open ? "NotificationsBell/open" : "NotificationsBell/deferred",
+    blocksRendering: false,
+    userSpecific: true,
+  });
   const notifications = contractNotifications(portfolio.data ?? [], wallet.address);
 
   return (
-    <Popover>
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (nextOpen) setPortfolioEnabled(true);
+      }}
+    >
       <PopoverTrigger asChild>
         <button
           aria-label="Notifications"

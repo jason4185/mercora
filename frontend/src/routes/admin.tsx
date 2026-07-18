@@ -75,10 +75,13 @@ function formatUtc(seconds: bigint | null): string {
 }
 
 function AdminPage() {
-  const wallet = useWallet();
+  const wallet = useWallet({ authorization: true });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const configQuery = useMarketConfiguration();
+  const configQuery = useMarketConfiguration({
+    source: "AdminPage/useMarketConfiguration",
+    blocksRendering: true,
+  });
   const assets = useMemo(
     () => configQuery.data?.supported_assets ?? [],
     [configQuery.data?.supported_assets],

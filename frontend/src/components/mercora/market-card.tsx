@@ -16,10 +16,11 @@ import { formatCompactUtcWindow } from "@/lib/format";
 import { useWallet } from "@/lib/wallet-context";
 import { useUserMarketStatus } from "@/hooks/contract/use-mercora";
 import { userMarketResult } from "@/lib/contract-ui";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export function MarketCard({ m }: { m: MarketView }) {
   const navigate = useNavigate();
-  const wallet = useWallet();
+  const wallet = useWallet({ balance: false });
   const { up, down } = marketPercentages(m);
   const bettingOpen = m.status === "OPEN" && Date.now() < m.bettingCloseTime;
   const candleRunning = m.status === "CLOSED";
@@ -27,6 +28,9 @@ export function MarketCard({ m }: { m: MarketView }) {
     m.status === "SETTLED" || m.status === "INCONCLUSIVE" || m.status === "CANCELLED";
   const userStatus = useUserMarketStatus(m.id, wallet.address, {
     enabled: wallet.isConnected && terminal,
+    source: "MarketCard/useUserMarketStatus",
+    blocksRendering: false,
+    essentialAboveFold: false,
   });
   const valid = m.evidence.filter((source) => source.status === "VALID");
   const upVotes = valid.filter((source) => source.direction === "UP").length;
@@ -129,7 +133,7 @@ export function MarketCard({ m }: { m: MarketView }) {
                   <CheckCircle2 className="h-3.5 w-3.5" /> Result Confirmed · {m.outcome}
                 </span>
                 <span className="text-[10.5px] text-consensus">
-                  {matching === 5 ? "All 5 exchanges agreed" : `${matching} of 5 exchanges agreed`}
+                  {matching} of 5 exchange directions matched
                 </span>
               </div>
               {first && (
@@ -199,6 +203,37 @@ export function MarketCard({ m }: { m: MarketView }) {
           )}
         </>
       )}
+    </article>
+  );
+}
+
+export function MarketCardSkeleton() {
+  return (
+    <article className="card-elevated flex min-h-[236px] flex-col rounded-xl p-3.5">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+        <Skeleton className="h-5 w-5 rounded-full" />
+        <div className="min-w-0 space-y-1.5">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-3/4" />
+        </div>
+        <Skeleton className="h-5 w-16 rounded-full" />
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <Skeleton className="h-3 w-28" />
+        <Skeleton className="h-3 w-20" />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-border/80 bg-background/25 p-2">
+        <Skeleton className="h-4 w-20" />
+        <Skeleton className="ml-auto h-4 w-24" />
+      </div>
+      <div className="mt-3 space-y-2">
+        <Skeleton className="h-2 w-full rounded-full" />
+        <div className="grid grid-cols-2 gap-2">
+          <Skeleton className="h-10 rounded-lg" />
+          <Skeleton className="h-10 rounded-lg" />
+        </div>
+      </div>
     </article>
   );
 }
